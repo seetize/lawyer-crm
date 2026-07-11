@@ -1,0 +1,409 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Реестр клиентов — юридическая практика</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,400;8..60,600;8..60,700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@500&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --paper:#EEF0F4;
+    --surface:#FFFFFF;
+    --ink:#1A2233;
+    --ink-soft:#5C6470;
+    --line:#DADFE6;
+    --brass:#A6784C;
+    --brass-deep:#8A6038;
+    --new:#5B6EE8;
+    --new-bg:#EAEDFC;
+    --progress:#C98A2E;
+    --progress-bg:#FBF0DD;
+    --closed:#3F8F6C;
+    --closed-bg:#E7F3ED;
+    --danger:#C1462F;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;}
+  body{
+    background:var(--paper);
+    color:var(--ink);
+    font-family:'IBM Plex Sans', sans-serif;
+    min-height:100vh;
+    -webkit-font-smoothing:antialiased;
+  }
+  .wrap{max-width:1080px;margin:0 auto;padding:40px 24px 80px;}
+
+  /* Header */
+  header{display:flex;align-items:flex-end;justify-content:space-between;gap:24px;margin-bottom:32px;flex-wrap:wrap;}
+  .brand-eyebrow{
+    font-family:'IBM Plex Mono', monospace;
+    font-size:11px;letter-spacing:.14em;text-transform:uppercase;
+    color:var(--brass-deep);margin:0 0 6px;font-weight:500;
+  }
+  h1{
+    font-family:'Source Serif 4', serif;
+    font-weight:700;font-size:32px;margin:0;letter-spacing:-0.01em;
+  }
+  .header-actions{display:flex;gap:10px;align-items:center;}
+  .icon-btn{
+    background:var(--surface);border:1px solid var(--line);color:var(--ink-soft);
+    padding:9px 14px;border-radius:8px;font-size:13px;font-family:inherit;cursor:pointer;
+    display:flex;align-items:center;gap:6px;transition:.15s;
+  }
+  .icon-btn:hover{border-color:var(--brass);color:var(--ink);}
+
+  /* Stat tabs — folder-tab motif */
+  .stats{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-bottom:28px;}
+  .stat{
+    background:var(--surface);
+    border:1px solid var(--line);
+    border-top:3px solid var(--stat-color);
+    border-radius:10px;
+    padding:18px 20px;
+    position:relative;
+  }
+  .stat .num{font-family:'Source Serif 4', serif;font-size:34px;font-weight:700;line-height:1;color:var(--ink);}
+  .stat .label{margin-top:6px;font-size:13px;color:var(--ink-soft);display:flex;align-items:center;gap:6px;}
+  .dot{width:8px;height:8px;border-radius:50%;background:var(--stat-color);display:inline-block;}
+  .stat.st-new{--stat-color:var(--new);}
+  .stat.st-progress{--stat-color:var(--progress);}
+  .stat.st-closed{--stat-color:var(--closed);}
+
+  /* Panel / form */
+  .panel{
+    background:var(--surface);border:1px solid var(--line);border-radius:10px;
+    padding:20px 22px;margin-bottom:24px;
+  }
+  .panel h2{font-family:'Source Serif 4', serif;font-size:18px;margin:0 0 16px;font-weight:600;}
+  .form-row{display:grid;grid-template-columns:1.4fr 1fr 1fr auto;gap:12px;align-items:end;}
+  @media(max-width:760px){.form-row{grid-template-columns:1fr;}}
+  label{display:block;font-size:12px;color:var(--ink-soft);margin-bottom:5px;font-weight:500;}
+  input[type=text], input[type=tel], select{
+    width:100%;padding:10px 12px;border:1px solid var(--line);border-radius:7px;
+    font-family:inherit;font-size:14px;color:var(--ink);background:#FBFBFD;
+  }
+  input:focus, select:focus{outline:2px solid var(--brass);outline-offset:1px;border-color:var(--brass);}
+  .btn-primary{
+    background:var(--ink);color:#fff;border:none;padding:11px 20px;border-radius:7px;
+    font-family:inherit;font-size:14px;font-weight:500;cursor:pointer;white-space:nowrap;transition:.15s;
+  }
+  .btn-primary:hover{background:var(--brass-deep);}
+  .err{color:var(--danger);font-size:12px;margin-top:8px;}
+
+  /* Table / ledger */
+  .ledger{background:var(--surface);border:1px solid var(--line);border-radius:10px;overflow:hidden;}
+  table{width:100%;border-collapse:collapse;}
+  thead th{
+    text-align:left;font-size:11px;letter-spacing:.08em;text-transform:uppercase;
+    color:var(--ink-soft);font-weight:500;padding:12px 16px;border-bottom:1px solid var(--line);
+    background:#FAFAFC;
+  }
+  tbody td{padding:14px 16px;border-bottom:1px solid var(--line);font-size:14px;vertical-align:middle;}
+  tbody tr:last-child td{border-bottom:none;}
+  tbody tr:hover{background:#FBFBFD;}
+  .case-no{font-family:'IBM Plex Mono', monospace;color:var(--ink-soft);font-size:12.5px;}
+  .name-cell{font-weight:600;}
+  .phone-cell{font-family:'IBM Plex Mono', monospace;font-size:13px;color:var(--ink-soft);}
+
+  .stamp{
+    display:inline-flex;align-items:center;gap:6px;padding:5px 11px;border-radius:20px;
+    font-size:12.5px;font-weight:600;border:none;cursor:pointer;font-family:inherit;
+    transition:transform .12s ease;
+  }
+  .stamp:active{transform:scale(.94);}
+  .stamp.new{background:var(--new-bg);color:var(--new);}
+  .stamp.progress{background:var(--progress-bg);color:var(--progress);}
+  .stamp.closed{background:var(--closed-bg);color:var(--closed);}
+  .stamp .arrow{opacity:.55;font-size:11px;}
+
+  .del-btn{
+    background:none;border:none;color:var(--ink-soft);cursor:pointer;font-size:13px;
+    padding:6px 8px;border-radius:6px;
+  }
+  .del-btn:hover{color:var(--danger);background:#FBEAE6;}
+
+  .empty{padding:48px 16px;text-align:center;color:var(--ink-soft);}
+  .empty b{color:var(--ink);}
+
+  /* Settings drawer */
+  .drawer{
+    position:fixed;top:0;right:0;height:100%;width:340px;max-width:90vw;background:var(--surface);
+    box-shadow:-8px 0 30px rgba(20,25,40,.12);transform:translateX(100%);transition:transform .2s ease;
+    z-index:50;padding:24px;overflow-y:auto;
+  }
+  .drawer.open{transform:translateX(0);}
+  .drawer h3{font-family:'Source Serif 4', serif;font-size:19px;margin:0 0 4px;}
+  .drawer p.hint{font-size:12.5px;color:var(--ink-soft);margin:0 0 18px;line-height:1.5;}
+  .drawer label{margin-top:14px;}
+  .backdrop{position:fixed;inset:0;background:rgba(20,25,40,.25);z-index:40;opacity:0;pointer-events:none;transition:opacity .2s;}
+  .backdrop.open{opacity:1;pointer-events:auto;}
+  .toggle-row{display:flex;align-items:center;justify-content:space-between;margin-top:16px;}
+  .switch{position:relative;width:40px;height:22px;background:var(--line);border-radius:20px;cursor:pointer;}
+  .switch.on{background:var(--closed);}
+  .switch::after{content:'';position:absolute;top:2px;left:2px;width:18px;height:18px;background:#fff;border-radius:50%;transition:.15s;}
+  .switch.on::after{left:20px;}
+  .toast{
+    position:fixed;bottom:24px;right:24px;background:var(--ink);color:#fff;padding:12px 18px;
+    border-radius:8px;font-size:13.5px;z-index:60;opacity:0;transform:translateY(8px);
+    transition:.2s;pointer-events:none;
+  }
+  .toast.show{opacity:1;transform:translateY(0);}
+  .save-btn{width:100%;margin-top:18px;}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <p class="brand-eyebrow">Реестр дел · практика</p>
+      <h1>Клиенты</h1>
+    </div>
+    <div class="header-actions">
+      <button class="icon-btn" id="settingsBtn">⚙ Уведомления</button>
+    </div>
+  </header>
+
+  <div class="stats" id="stats"></div>
+
+  <div class="panel">
+    <h2>Добавить клиента</h2>
+    <div class="form-row">
+      <div>
+        <label for="fName">Имя</label>
+        <input type="text" id="fName" placeholder="Иванов Иван Иванович" />
+      </div>
+      <div>
+        <label for="fPhone">Телефон</label>
+        <input type="tel" id="fPhone" placeholder="+7 900 000-00-00" />
+      </div>
+      <div>
+        <label for="fStatus">Статус дела</label>
+        <select id="fStatus">
+          <option value="new">Новый</option>
+          <option value="progress">В работе</option>
+          <option value="closed">Закрыт</option>
+        </select>
+      </div>
+      <button class="btn-primary" id="addBtn">Добавить</button>
+    </div>
+    <div class="err" id="formErr" style="display:none;"></div>
+  </div>
+
+  <div class="ledger">
+    <table>
+      <thead>
+        <tr>
+          <th style="width:70px;">№ дела</th>
+          <th>Имя</th>
+          <th style="width:170px;">Телефон</th>
+          <th style="width:150px;">Статус</th>
+          <th style="width:50px;"></th>
+        </tr>
+      </thead>
+      <tbody id="tbody"></tbody>
+    </table>
+    <div class="empty" id="emptyState" style="display:none;">
+      Пока нет ни одного клиента. <b>Добавьте первого</b> через форму выше.
+    </div>
+  </div>
+</div>
+
+<div class="backdrop" id="backdrop"></div>
+<div class="drawer" id="drawer">
+  <h3>Уведомления в Telegram</h3>
+  <p class="hint">При добавлении нового клиента бот будет присылать сообщение в указанный чат. Токен и chat_id хранятся только в этом браузере (localStorage) — для прототипа это ок, для продакшена лучше вызывать Telegram API с сервера, а не из браузера.</p>
+  <div class="toggle-row">
+    <span style="font-size:14px;">Включить уведомления</span>
+    <div class="switch" id="notifSwitch"></div>
+  </div>
+  <label for="botToken">Bot Token</label>
+  <input type="text" id="botToken" placeholder="123456:ABC-DEF..." />
+  <label for="chatId">Chat ID</label>
+  <input type="text" id="chatId" placeholder="например 123456789" />
+  <button class="btn-primary save-btn" id="saveNotif">Сохранить</button>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const STORE_KEY = 'lawyer_crm_clients_v1';
+const NOTIF_KEY = 'lawyer_crm_notif_v1';
+
+const STATUS_META = {
+  new:      { label: 'Новый',    next: 'progress', cls: 'new' },
+  progress: { label: 'В работе', next: 'closed',   cls: 'progress' },
+  closed:   { label: 'Закрыт',   next: 'new',      cls: 'closed' },
+};
+
+function loadClients(){
+  try{
+    const raw = localStorage.getItem(STORE_KEY);
+    if(raw) return JSON.parse(raw);
+  }catch(e){}
+  // seed with example data on first run
+  return [
+    { id: cryptoId(), name:'Смирнова Анна Викторовна', phone:'+7 916 233-10-45', status:'progress', createdAt: Date.now()-86400000*3 },
+    { id: cryptoId(), name:'Ковалёв Дмитрий Сергеевич', phone:'+7 903 771-98-02', status:'new', createdAt: Date.now()-86400000 },
+    { id: cryptoId(), name:'ООО «Гранит-Строй»', phone:'+7 495 660-14-77', status:'closed', createdAt: Date.now()-86400000*10 },
+  ];
+}
+function cryptoId(){ return Math.random().toString(36).slice(2,10)+Date.now().toString(36); }
+
+let clients = loadClients();
+let notifSettings = JSON.parse(localStorage.getItem(NOTIF_KEY) || '{"enabled":false,"token":"","chatId":""}');
+
+function persist(){ localStorage.setItem(STORE_KEY, JSON.stringify(clients)); }
+
+function render(){
+  // stats
+  const counts = { new:0, progress:0, closed:0 };
+  clients.forEach(c => counts[c.status]++);
+  document.getElementById('stats').innerHTML = `
+    <div class="stat st-new"><div class="num">${counts.new}</div><div class="label"><span class="dot"></span>Новый</div></div>
+    <div class="stat st-progress"><div class="num">${counts.progress}</div><div class="label"><span class="dot"></span>В работе</div></div>
+    <div class="stat st-closed"><div class="num">${counts.closed}</div><div class="label"><span class="dot"></span>Закрыт</div></div>
+  `;
+
+  const tbody = document.getElementById('tbody');
+  const empty = document.getElementById('emptyState');
+  if(clients.length === 0){
+    tbody.innerHTML = '';
+    empty.style.display = 'block';
+    return;
+  }
+  empty.style.display = 'none';
+
+  const sorted = [...clients].sort((a,b)=>b.createdAt-a.createdAt);
+  tbody.innerHTML = sorted.map((c, idx) => {
+    const meta = STATUS_META[c.status];
+    return `
+      <tr>
+        <td class="case-no">№ ${String(idx+1).padStart(3,'0')}</td>
+        <td class="name-cell">${escapeHtml(c.name)}</td>
+        <td class="phone-cell">${escapeHtml(c.phone || '—')}</td>
+        <td>
+          <button class="stamp ${meta.cls}" data-id="${c.id}" title="Нажмите, чтобы перевести в следующий статус">
+            ${meta.label} <span class="arrow">→ ${STATUS_META[meta.next].label}</span>
+          </button>
+        </td>
+        <td><button class="del-btn" data-del="${c.id}" title="Удалить">✕</button></td>
+      </tr>
+    `;
+  }).join('');
+}
+
+function escapeHtml(s){
+  return String(s).replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+}
+
+document.getElementById('tbody').addEventListener('click', (e)=>{
+  const stampBtn = e.target.closest('[data-id]');
+  if(stampBtn){
+    const id = stampBtn.getAttribute('data-id');
+    const c = clients.find(x=>x.id===id);
+    if(c){
+      c.status = STATUS_META[c.status].next;
+      persist();
+      render();
+    }
+    return;
+  }
+  const delBtn = e.target.closest('[data-del]');
+  if(delBtn){
+    const id = delBtn.getAttribute('data-del');
+    clients = clients.filter(x=>x.id!==id);
+    persist();
+    render();
+  }
+});
+
+document.getElementById('addBtn').addEventListener('click', async ()=>{
+  const nameEl = document.getElementById('fName');
+  const phoneEl = document.getElementById('fPhone');
+  const statusEl = document.getElementById('fStatus');
+  const errEl = document.getElementById('formErr');
+
+  const name = nameEl.value.trim();
+  const phone = phoneEl.value.trim();
+  const status = statusEl.value;
+
+  if(!name){
+    errEl.textContent = 'Укажите имя клиента.';
+    errEl.style.display = 'block';
+    nameEl.focus();
+    return;
+  }
+  errEl.style.display = 'none';
+
+  const newClient = { id: cryptoId(), name, phone, status, createdAt: Date.now() };
+  clients.push(newClient);
+  persist();
+  render();
+
+  nameEl.value=''; phoneEl.value=''; statusEl.value='new';
+  showToast('Клиент добавлен');
+
+  if(notifSettings.enabled && notifSettings.token && notifSettings.chatId){
+    sendTelegramNotification(newClient);
+  }
+});
+
+async function sendTelegramNotification(client){
+  const text = `📋 Новый клиент\nИмя: ${client.name}\nТелефон: ${client.phone || '—'}\nСтатус: ${STATUS_META[client.status].label}`;
+  try{
+    await fetch(`https://api.telegram.org/bot${notifSettings.token}/sendMessage`, {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ chat_id: notifSettings.chatId, text })
+    });
+  }catch(e){
+    console.warn('Telegram notification failed', e);
+  }
+}
+
+function showToast(msg){
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  setTimeout(()=>t.classList.remove('show'), 2200);
+}
+
+// Settings drawer
+const drawer = document.getElementById('drawer');
+const backdrop = document.getElementById('backdrop');
+document.getElementById('settingsBtn').addEventListener('click', ()=>{
+  document.getElementById('botToken').value = notifSettings.token || '';
+  document.getElementById('chatId').value = notifSettings.chatId || '';
+  updateSwitch(notifSettings.enabled);
+  drawer.classList.add('open');
+  backdrop.classList.add('open');
+});
+backdrop.addEventListener('click', ()=>{
+  drawer.classList.remove('open');
+  backdrop.classList.remove('open');
+});
+const notifSwitch = document.getElementById('notifSwitch');
+let switchState = notifSettings.enabled;
+function updateSwitch(v){
+  switchState = v;
+  notifSwitch.classList.toggle('on', v);
+}
+notifSwitch.addEventListener('click', ()=> updateSwitch(!switchState));
+
+document.getElementById('saveNotif').addEventListener('click', ()=>{
+  notifSettings = {
+    enabled: switchState,
+    token: document.getElementById('botToken').value.trim(),
+    chatId: document.getElementById('chatId').value.trim(),
+  };
+  localStorage.setItem(NOTIF_KEY, JSON.stringify(notifSettings));
+  showToast('Настройки уведомлений сохранены');
+  drawer.classList.remove('open');
+  backdrop.classList.remove('open');
+});
+
+render();
+</script>
+</body>
+</html>
