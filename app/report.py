@@ -89,6 +89,11 @@ def _services(profile: SalonProfile) -> list[str]:
 def _reviews(profile: SalonProfile) -> list[str]:
     if not profile.reviews:
         return [f"💬 Отзывы: {NOT_PUBLIC}"]
+    if profile.reviews_summary:
+        return [
+            f"💬 Выжимка из {len(profile.reviews)} доступных отзывов:",
+            profile.reviews_summary,
+        ]
     result = ["💬 Последние доступные отзывы:"]
     for review in profile.reviews[:3]:
         rating = f", {review.rating:g}/5" if review.rating is not None else ""

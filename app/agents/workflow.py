@@ -3,6 +3,7 @@ from collections.abc import Awaitable, Callable
 from app.agents.collector import CollectorAgent
 from app.agents.contracts import AgentRunResult, WorkflowStatus
 from app.agents.publisher import PublisherAgent
+from app.agents.review_analyst import ReviewAnalystAgent
 from app.agents.reviewer import ReviewerAgent
 from app.report import build_report
 
@@ -12,11 +13,13 @@ class SalonAgentWorkflow:
         self,
         collector: CollectorAgent,
         reviewer: ReviewerAgent,
+        review_analyst: ReviewAnalystAgent,
         publisher: PublisherAgent,
         max_attempts: int = 2,
     ) -> None:
         self.collector = collector
         self.reviewer = reviewer
+        self.review_analyst = review_analyst
         self.publisher = publisher
         self.max_attempts = max_attempts
 
@@ -35,6 +38,8 @@ class SalonAgentWorkflow:
                 query, city, missing_fields, profile
             )
             review = await self.reviewer.run(profile)
+            if review.is_valid:
+                profile = await self.review_analyst.run(profile)
             status, report = await self.publisher.run(
                 profile, review, criteria, deliver
             )
@@ -52,6 +57,7 @@ class SalonAgentWorkflow:
 
         # После повторной проверки публикуем честный частичный отчёт:
         # отсутствующие поля явно помечены, а найденные данные не теряются.
+        profile = await self.review_analyst.run(profile)
         report = build_report(profile, criteria)
         if deliver:
             await deliver(report)

@@ -6,12 +6,16 @@ from app.models import ReportRequest
 from app.providers import build_provider
 from app.providers.base import PlaceNotFoundError
 from app.service import SalonReportService
+from app.review_summary import build_review_summarizer
 
 app = FastAPI(title="Beauty Inspector API", version="0.1.0")
 
 
 def get_service(settings: Settings = Depends(get_settings)) -> SalonReportService:
-    return SalonReportService(build_provider(settings))
+    return SalonReportService(
+        build_provider(settings),
+        review_summarizer=build_review_summarizer(settings),
+    )
 
 
 @app.get("/health")

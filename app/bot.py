@@ -12,6 +12,7 @@ from app.config import get_settings
 from app.providers import build_provider
 from app.providers.base import PlaceNotFoundError
 from app.service import SalonReportService
+from app.review_summary import build_review_summarizer
 from app.user_input import parse_request
 
 router = Router()
@@ -20,21 +21,10 @@ service: SalonReportService | None = None
 SEARCH_BUTTON = "🔎 Найти заведение"
 CITY_BUTTON = "🌍 Выбрать город"
 BACK_BUTTON = "⬅️ Назад"
-CATEGORIES = (
-    "Салон красоты",
-    "Мужская парикмахерская",
-    "Автосервис",
-    "Кофейня",
-    "Ресторан",
-    "Стоматология",
-    "Фитнес-клуб",
-    "Другая категория",
-)
 
 
 class SearchFlow(StatesGroup):
     waiting_city = State()
-    waiting_category = State()
     waiting_name = State()
 
 
@@ -46,15 +36,6 @@ def main_keyboard() -> ReplyKeyboardMarkup:
         ],
         resize_keyboard=True,
     )
-
-
-def category_keyboard() -> ReplyKeyboardMarkup:
-    rows = [
-        [KeyboardButton(text=CATEGORIES[index]), KeyboardButton(text=CATEGORIES[index + 1])]
-        for index in range(0, len(CATEGORIES), 2)
-    ]
-    rows.append([KeyboardButton(text=BACK_BUTTON)])
-    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
 
 
 @router.message(CommandStart())
@@ -103,37 +84,23 @@ async def save_city(message: Message, state: FSMContext) -> None:
 
 
 @router.message(F.text == SEARCH_BUTTON)
-async def choose_category(message: Message, state: FSMContext) -> None:
-    await state.set_state(SearchFlow.waiting_category)
-    await message.answer(
-        "Выберите категорию заведения:",
-        reply_markup=category_keyboard(),
-    )
-
-
-@router.message(SearchFlow.waiting_category)
-async def save_category(message: Message, state: FSMContext) -> None:
-    category = " ".join((message.text or "").split())
-    if category == BACK_BUTTON:
-        await state.set_state(None)
-        await message.answer("Возвращаюсь в главное меню.", reply_markup=main_keyboard())
-        return
-    if category not in CATEGORIES:
-        await message.answer("Выберите категорию кнопкой ниже.")
-        return
-    await state.update_data(category=category)
+async def begin_search(message: Message, state: FSMContext) -> None:
     await state.set_state(SearchFlow.waiting_name)
     await message.answer(
-        f"Категория: {category}.\nТеперь напишите название заведения или его адрес."
+        "Напишите название заведения или его адрес.",
+        reply_markup=ReplyKeyboardMarkup(
+            keyboard=[[KeyboardButton(text=BACK_BUTTON)]],
+            resize_keyboard=True,
+        ),
     )
 
 
 @router.message(SearchFlow.waiting_name)
-async def search_selected_category(message: Message, state: FSMContext) -> None:
+async def search_by_name(message: Message, state: FSMContext) -> None:
     raw = " ".join((message.text or "").split())
     if raw == BACK_BUTTON:
-        await state.set_state(SearchFlow.waiting_category)
-        await message.answer("Выберите категорию:", reply_markup=category_keyboard())
+        await state.set_state(None)
+        await message.answer("Возвращаюсь в главное меню.", reply_markup=main_keyboard())
         return
     data = await state.get_data()
     city = data.get("city", get_settings().default_city)
@@ -274,7 +241,10 @@ async def main() -> None:
     settings = get_settings()
     if not settings.telegram_bot_token:
         raise RuntimeError("Укажите TELEGRAM_BOT_TOKEN в .env")
-    service = SalonReportService(build_provider(settings))
+    service = SalonReportService(
+        build_provider(settings),
+        review_summarizer=build_review_summarizer(settings),
+    )
     dispatcher = Dispatcher()
     dispatcher.include_router(router)
     await dispatcher.start_polling(Bot(settings.telegram_bot_token))

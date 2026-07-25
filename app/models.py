@@ -29,6 +29,7 @@ class SalonProfile(BaseModel):
     rating: float | None = None
     reviews_count: int | None = None
     reviews: list[Review] = Field(default_factory=list)
+    reviews_summary: str | None = None
     price_level: str | None = None
     opening_hours: list[str] = Field(default_factory=list)
     website: HttpUrl | None = None

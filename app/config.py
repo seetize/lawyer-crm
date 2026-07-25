@@ -8,6 +8,11 @@ class Settings(BaseSettings):
     telegram_bot_token: str | None = None
     google_places_api_key: str | None = None
     twogis_api_key: str | None = None
+    openai_api_key: str | None = None
+    openai_reviews_enabled: bool = True
+    openai_review_model: str = "gpt-5.6-luna"
+    review_summary_provider: Literal["local", "openai", "off"] = "local"
+    review_summary_max_chars: int = 700
     data_provider: Literal["demo", "google", "2gis", "multi"] = "demo"
     default_language: str = "ru"
     default_city: str = "Астрахань"
