@@ -8,26 +8,50 @@ class Review(BaseModel):
     rating: float | None = None
     text: str
     published_at: str | None = None
+    provider: str = "unknown"
+    provider_review_id: str | None = None
+    url: HttpUrl | None = None
+    organization_replies: list["OrganizationReply"] = Field(default_factory=list)
+
+
+class OrganizationReply(BaseModel):
+    text: str
+    author: str | None = None
+    published_at: str | None = None
 
 
 class Service(BaseModel):
     name: str
+    provider_service_id: str | None = None
     price: str | None = None
     duration: str | None = None
+    provider: str | None = None
+    source_url: HttpUrl | None = None
 
 
 class SourceRef(BaseModel):
     provider: str
+    provider_id: str | None = None
+    url: HttpUrl | None = None
+
+
+class SourceRating(BaseModel):
+    provider: str
+    rating: float | None = None
+    reviews_count: int | None = None
     url: HttpUrl | None = None
 
 
 class SalonProfile(BaseModel):
     provider: str
     provider_id: str
+    primary_provider: str = "unknown"
     name: str
     address: str | None = None
+    description: str | None = None
     rating: float | None = None
     reviews_count: int | None = None
+    ratings: list[SourceRating] = Field(default_factory=list)
     reviews: list[Review] = Field(default_factory=list)
     reviews_summary: str | None = None
     price_level: str | None = None
@@ -37,6 +61,7 @@ class SalonProfile(BaseModel):
     services: list[Service] = Field(default_factory=list)
     masters: list[str] = Field(default_factory=list)
     available_slots: list[str] = Field(default_factory=list)
+    booking_url: HttpUrl | None = None
     sources: list[SourceRef] = Field(default_factory=list)
     collected_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 

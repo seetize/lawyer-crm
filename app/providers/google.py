@@ -1,6 +1,6 @@
 import httpx
 
-from app.models import Review, SalonProfile, SourceRef
+from app.models import Review, SalonProfile, SourceRating, SourceRef
 from app.providers.base import PlaceNotFoundError, PlaceProvider
 
 
@@ -55,6 +55,7 @@ class GooglePlacesProvider(PlaceProvider):
                 rating=item.get("rating"),
                 text=item.get("text", {}).get("text", ""),
                 published_at=item.get("relativePublishTimeDescription"),
+                provider="google_places",
             )
             for item in place.get("reviews", [])
             if item.get("text", {}).get("text")
@@ -70,6 +71,7 @@ class GooglePlacesProvider(PlaceProvider):
         return SalonProfile(
             provider="google_places",
             provider_id=place["id"],
+            primary_provider="google_places",
             name=place.get("displayName", {}).get("text", "Без названия"),
             address=place.get("formattedAddress"),
             rating=place.get("rating"),
@@ -81,9 +83,18 @@ class GooglePlacesProvider(PlaceProvider):
             ),
             website=place.get("websiteUri"),
             map_url=place.get("googleMapsUri"),
+            ratings=[
+                SourceRating(
+                    provider="google_places",
+                    rating=place.get("rating"),
+                    reviews_count=place.get("userRatingCount"),
+                    url=place.get("googleMapsUri"),
+                )
+            ],
             sources=[
                 SourceRef(
                     provider="google_places",
+                    provider_id=place["id"],
                     url=place.get("googleMapsUri"),
                 )
             ],

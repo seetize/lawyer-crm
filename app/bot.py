@@ -6,17 +6,20 @@ from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import KeyboardButton, Message, ReplyKeyboardMarkup
+from aiogram.types import CallbackQuery, KeyboardButton, Message, ReplyKeyboardMarkup
 
 from app.config import get_settings
 from app.providers import build_provider
 from app.providers.base import PlaceNotFoundError
+from app.report_cache import MemoryReportCache
 from app.service import SalonReportService
 from app.review_summary import build_review_summarizer
+from app.telegram_views import SECTIONS, render_section, section_keyboard
 from app.user_input import parse_request
 
 router = Router()
 service: SalonReportService | None = None
+report_cache = MemoryReportCache()
 
 SEARCH_BUTTON = "🔎 Найти заведение"
 CITY_BUTTON = "🌍 Выбрать город"
@@ -144,6 +147,43 @@ async def plain_text(message: Message, state: FSMContext) -> None:
         )
 
 
+@router.callback_query(F.data.startswith("rv:"))
+async def report_section(callback: CallbackQuery) -> None:
+    data = callback.data or ""
+    parts = data.split(":")
+    if len(parts) != 4 or parts[0] != "rv" or parts[2] not in SECTIONS:
+        await callback.answer("Некорректная кнопка.", show_alert=True)
+        return
+    token, section = parts[1], parts[2]
+    try:
+        requested_page = int(parts[3])
+    except ValueError:
+        requested_page = 0
+    profile = await report_cache.get(token, callback.from_user.id)
+    if profile is None or callback.message is None:
+        await callback.answer(
+            "Отчёт устарел. Повторите поиск заведения.",
+            show_alert=True,
+        )
+        return
+    await callback.answer()
+    rendered = render_section(profile, section, requested_page)
+    try:
+        await callback.message.edit_text(
+            rendered.text,
+            reply_markup=section_keyboard(
+                token,
+                section,
+                rendered.page,
+                rendered.total_pages,
+            ),
+            disable_web_page_preview=True,
+        )
+    except TelegramBadRequest as error:
+        if "message is not modified" not in str(error):
+            raise
+
+
 async def send_report(
     message: Message,
     query: str,
@@ -179,22 +219,36 @@ async def send_report(
             )
 
     try:
-        async def deliver(report: str) -> None:
-            await replace_status(report)
-
-        async with asyncio.timeout(50):
+        async with asyncio.timeout(90):
             result = await service.create_report(
                 query,
                 criteria=criteria,
                 city=city,
-                deliver=deliver,
             )
-        if result.report:
-            await restore_menu()
-            return
-        await replace_status(
-            "Не удалось сформировать даже частичный отчёт. Попробуйте уточнить адрес."
+        owner_id = (
+            message.from_user.id
+            if message.from_user is not None
+            else message.chat.id
         )
+        token = await report_cache.put(owner_id, result.profile)
+        rendered = render_section(result.profile, "main")
+        inline_keyboard = section_keyboard(token, "main")
+        try:
+            await status.edit_text(
+                rendered.text,
+                reply_markup=inline_keyboard,
+                disable_web_page_preview=True,
+            )
+        except TelegramBadRequest:
+            try:
+                await status.delete()
+            except TelegramBadRequest:
+                pass
+            await message.answer(
+                rendered.text,
+                reply_markup=inline_keyboard,
+                disable_web_page_preview=True,
+            )
         await restore_menu()
     except PlaceNotFoundError:
         await replace_status("Заведение не найдено. Добавьте город или адрес.")

@@ -4,7 +4,7 @@ from difflib import SequenceMatcher
 
 import httpx
 
-from app.models import SalonProfile, SourceRef
+from app.models import SalonProfile, SourceRating, SourceRef
 from app.providers.base import PlaceNotFoundError, PlaceProvider
 
 
@@ -104,6 +104,7 @@ class TwoGisPlaceProvider(PlaceProvider):
         return SalonProfile(
             provider="2gis",
             provider_id=provider_id,
+            primary_provider="2gis",
             name=item.get("name") or query,
             address=address,
             rating=reviews.get("general_rating") or reviews.get("org_rating"),
@@ -112,7 +113,22 @@ class TwoGisPlaceProvider(PlaceProvider):
             opening_hours=TwoGisPlaceProvider._schedule(item.get("schedule", {})),
             website=website,
             map_url=source_url,
-            sources=[SourceRef(provider="2gis", url=source_url)],
+            ratings=[
+                SourceRating(
+                    provider="2gis",
+                    rating=reviews.get("general_rating") or reviews.get("org_rating"),
+                    reviews_count=reviews.get("general_review_count_with_stars")
+                    or reviews.get("general_review_count"),
+                    url=source_url,
+                )
+            ],
+            sources=[
+                SourceRef(
+                    provider="2gis",
+                    provider_id=provider_id,
+                    url=source_url,
+                )
+            ],
         )
 
     @staticmethod

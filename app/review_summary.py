@@ -98,6 +98,7 @@ class LocalReviewSummarizer:
         negative_themes: Counter[str] = Counter()
         positive_reviews = 0
         negative_reviews = 0
+        replied_reviews = 0
 
         for review in reviews:
             text = " ".join(review.text.casefold().split())
@@ -106,6 +107,8 @@ class LocalReviewSummarizer:
                 positive_reviews += 1
             elif sentiment < 0:
                 negative_reviews += 1
+            if review.organization_replies:
+                replied_reviews += 1
             for positive_theme, negative_theme, markers in self.themes:
                 if not any(marker in text for marker in markers):
                     continue
@@ -133,6 +136,8 @@ class LocalReviewSummarizer:
             f"Чаще хвалят: {praised}.\n"
             f"Чаще критикуют: {criticized}.\n"
             f"На что обратить внимание: {attention}. "
+            f"Ответы организации: опубликованы к {replied_reviews} из "
+            f"{len(reviews)} собранных отзывов. "
             "Вывод отражает только опубликованные отзывы и может не описывать "
             "весь клиентский опыт."
         )
@@ -229,6 +234,9 @@ class OpenAIReviewSummarizer:
             text = " ".join(review.text.split())[:1200]
             rating = f" Оценка: {review.rating:g}/5." if review.rating else ""
             rendered.append(f"{index}.{rating} {text}")
+            for reply in review.organization_replies:
+                reply_text = " ".join(reply.text.split())[:1200]
+                rendered.append(f"Ответ организации на отзыв {index}: {reply_text}")
         return "\n".join(rendered)
 
     @staticmethod
