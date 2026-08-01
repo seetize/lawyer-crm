@@ -40,6 +40,10 @@ class CollectorAgent:
             "opening_hours",
             "services",
             "masters",
+            "categories",
+            "awards",
+            "news",
+            "search_rankings",
             "available_slots",
             "sources",
         ):

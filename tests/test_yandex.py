@@ -24,6 +24,11 @@ def test_yandex_search_card_is_normalized_as_primary_source() -> None:
                         "reviewCount": 151,
                     },
                     "categories": [{"name": "Парикмахерская"}],
+                    "awards": {"goodPlaceYear": "2026"},
+                    "staff": [
+                        {"name": "Новый мастер", "active": True},
+                        {"name": "Старый мастер", "active": False},
+                    ],
                     "businessLinks": [
                         {
                             "type": "booking",
@@ -51,6 +56,9 @@ def test_yandex_search_card_is_normalized_as_primary_source() -> None:
     assert profile.provider_id == "1732432809"
     assert profile.rating == 4.9
     assert profile.reviews_count == 151
+    assert profile.categories == ["Парикмахерская"]
+    assert profile.awards == ["Хорошее место 2026"]
+    assert profile.masters == ["Новый мастер"]
     assert str(profile.booking_url) == "https://n575263.yclients.com/"
     assert len(profile.opening_hours) == 7
 
@@ -93,8 +101,10 @@ def test_yandex_prices_are_parsed() -> None:
         "topObjects": {
             "categories": [
                 {
+                    "categoryName": "Стрижки",
                     "categoryItems": [
                         {
+                            "sourceId": "service-1",
                             "title": "Мужская стрижка",
                             "description": "60 минут",
                             "price": 1000,
@@ -115,6 +125,65 @@ def test_yandex_prices_are_parsed() -> None:
     assert services[0].name == "Мужская стрижка"
     assert services[0].price == "1000 ₽"
     assert services[0].provider == "yandex_maps"
+    assert services[0].category == "Стрижки"
+    assert services[0].provider_service_id == "service-1"
+
+
+def test_yandex_news_payload_is_normalized() -> None:
+    news = YandexMapsProvider.parse_news_payload(
+        {
+            "data": {
+                "items": [
+                    {
+                        "id": 42,
+                        "uri": "tycoon_events/1.x/post/42",
+                        "text": " Новая   услуга ",
+                        "publicationTime": 1_700_138_772_654,
+                        "photos": [{"urlTemplate": "https://example.test/%s.jpg"}],
+                    }
+                ]
+            }
+        },
+        "1732432809",
+        "gsnv_lab",
+    )
+
+    assert len(news) == 1
+    assert news[0].text == "Новая услуга"
+    assert news[0].published_at == "2023-11-16"
+    assert str(news[0].photos[0]) == "https://example.test/XL.jpg"
+
+
+def test_ranking_scope_uses_city_and_metro_rules() -> None:
+    small = YandexMapsProvider._ranking_scope(
+        {
+            "coordinates": [48.03, 46.34],
+            "region": {
+                "names": {"nominative": "Астрахань"},
+                "bounds": [[47.8, 46.2], [48.2, 46.5]],
+                "zoom": 12,
+            },
+        },
+        None,
+    )
+    metro = YandexMapsProvider._ranking_scope(
+        {
+            "coordinates": [37.62, 55.75],
+            "region": {"names": {"nominative": "Москва"}, "zoom": 9},
+            "metro": [
+                {
+                    "name": "Тверская",
+                    "distanceValue": 300,
+                    "coordinates": [37.605, 55.765],
+                }
+            ],
+        },
+        None,
+    )
+
+    assert small[0:2] == ("Астрахань", "city")
+    assert metro[0:2] == ("метро Тверская", "metro")
+    assert metro[2] == [37.605, 55.765]
 
 
 def test_yandex_web_api_signature_is_stable() -> None:
@@ -131,3 +200,8 @@ def test_yandex_web_api_signature_is_stable() -> None:
     )
 
     assert signature == "3975830889"
+
+    cyrillic_signature = YandexMapsProvider._query_signature(
+        {"ajax": "1", "csrfToken": "abc:123", "text": "салон красоты"}
+    )
+    assert cyrillic_signature == "2296987397"

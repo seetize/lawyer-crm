@@ -1,4 +1,11 @@
-from app.models import OrganizationReply, Review, SalonProfile
+from app.models import (
+    NewsItem,
+    OrganizationReply,
+    Review,
+    SalonProfile,
+    SearchRanking,
+    Service,
+)
 from app.telegram_views import render_section, section_keyboard
 
 
@@ -50,3 +57,32 @@ def test_callback_payloads_are_short() -> None:
 
     assert callbacks
     assert all(len(value.encode()) <= 64 for value in callbacks)
+
+
+def test_new_yandex_sections_are_rendered() -> None:
+    profile = SalonProfile(
+        provider="yandex_maps",
+        provider_id="1",
+        name="Salon",
+        categories=["Ногтевая студия"],
+        awards=["Хорошее место 2026"],
+        masters=[],
+        services=[Service(name="Маникюр", category="Ногти", price="1000 ₽")],
+        news=[NewsItem(provider_news_id="42", text="Открыли новый кабинет")],
+        search_rankings=[
+            SearchRanking(
+                query="ногтевая студия",
+                position=3,
+                total_results=50,
+                checked_results=25,
+                scope="Астрахань",
+                scope_type="city",
+            )
+        ],
+    )
+
+    assert "Хорошее место 2026" in render_section(profile, "main").text
+    assert "📂 Ногти" in render_section(profile, "services").text
+    assert "Открыли новый кабинет" in render_section(profile, "news").text
+    assert "3-е место" in render_section(profile, "rankings").text
+    assert "не предоставлена" in render_section(profile, "masters").text

@@ -17,6 +17,8 @@ class Settings(BaseSettings):
     review_summary_provider: Literal["local", "openai", "off"] = "local"
     review_summary_max_chars: int = 700
     yandex_max_review_pages: int = 12
+    yandex_ranking_queries: str = "ногтевая студия,салон красоты"
+    yandex_ranking_max_pages: int = 20
     data_provider: Literal["demo", "google", "2gis", "yandex", "multi"] = "demo"
     default_language: str = "ru"
     default_city: str = "Астрахань"

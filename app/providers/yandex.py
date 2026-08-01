@@ -3,6 +3,7 @@ import json
 import math
 import re
 import urllib.parse
+from datetime import UTC, datetime
 from difflib import SequenceMatcher
 from typing import Any, Iterable
 
@@ -11,9 +12,11 @@ from bs4 import BeautifulSoup
 from curl_cffi.requests import AsyncSession, RequestsError
 
 from app.models import (
+    NewsItem,
     OrganizationReply,
     Review,
     SalonProfile,
+    SearchRanking,
     Service,
     SourceRating,
     SourceRef,
@@ -43,10 +46,20 @@ class YandexMapsProvider(PlaceProvider):
         language: str = "ru",
         max_review_pages: int = 12,
         review_concurrency: int = 3,
+        ranking_queries: list[str] | None = None,
+        ranking_max_pages: int = 20,
     ) -> None:
         self.language = language
         self.max_review_pages = max(1, min(max_review_pages, 12))
         self.review_concurrency = max(1, min(review_concurrency, 5))
+        self.ranking_queries = list(
+            dict.fromkeys(
+                " ".join(query.split())
+                for query in (ranking_queries or [])
+                if query.strip()
+            )
+        )
+        self.ranking_max_pages = max(1, min(ranking_max_pages, 20))
 
     async def collect(self, query: str, city: str | None = None) -> SalonProfile:
         headers = {
@@ -75,12 +88,16 @@ class YandexMapsProvider(PlaceProvider):
                 key=lambda candidate: self._match_score(query, candidate),
             )
             profile = self.normalize_organization(item)
-            reviews, services = await asyncio.gather(
+            reviews, services, news, rankings = await asyncio.gather(
                 self._fetch_all_reviews(client, item),
                 self._fetch_prices(client, item),
+                self._fetch_news(item),
+                self._fetch_search_rankings(item, city),
             )
             profile.reviews = reviews
             profile.services = services
+            profile.news = news
+            profile.search_rankings = rankings
             return profile
 
     @classmethod
@@ -114,6 +131,8 @@ class YandexMapsProvider(PlaceProvider):
             name=item.get("title") or item.get("name"),
             address=item.get("fullAddress") or item.get("address"),
             description=description,
+            categories=cls._categories(item),
+            awards=cls._awards(item),
             rating=rating,
             reviews_count=review_count,
             ratings=[
@@ -128,6 +147,7 @@ class YandexMapsProvider(PlaceProvider):
             website=cls._website(item),
             map_url=source_url,
             booking_url=booking_url,
+            masters=cls._masters(item),
             sources=[
                 SourceRef(
                     provider="yandex_maps",
@@ -136,6 +156,269 @@ class YandexMapsProvider(PlaceProvider):
                 )
             ],
         )
+
+    async def _fetch_news(self, item: dict[str, Any]) -> list[NewsItem]:
+        previews = item.get("eventsPreviews")
+        if not isinstance(previews, dict):
+            return []
+        count = int(previews.get("count") or 0)
+        list_uri = str(previews.get("uri") or "")
+        if count <= 0 or not list_uri:
+            return []
+
+        provider_id = str(item["id"])
+        slug = self._slug(item.get("seoname") or item.get("title") or "organization")
+        referer = f"https://yandex.ru/maps/org/{slug}/{provider_id}/posts/"
+        api_url = "https://yandex.ru/maps/api/posts/getPosts"
+        news: list[NewsItem] = []
+        csrf_token: str | None = None
+        offset = 0
+        try:
+            async with AsyncSession(
+                impersonate="chrome",
+                headers={"Referer": referer, "X-Retpath-Y": referer},
+                timeout=30,
+            ) as session:
+                while offset < count:
+                    payload, csrf_token = await self._signed_api_get(
+                        session,
+                        api_url,
+                        {
+                            "ajax": "1",
+                            "oid": provider_id,
+                            "offset": str(offset),
+                            "uri": list_uri,
+                        },
+                        csrf_token,
+                    )
+                    data = payload.get("data")
+                    if not isinstance(data, dict):
+                        break
+                    raw_items = data.get("items")
+                    if not isinstance(raw_items, list) or not raw_items:
+                        break
+                    news.extend(
+                        self.parse_news_payload(payload, provider_id, slug)
+                    )
+                    offset += len(raw_items)
+                    count = max(count, int(data.get("count") or count))
+        except (RequestsError, ValueError, TypeError):
+            return []
+
+        result: list[NewsItem] = []
+        seen: set[str] = set()
+        for item_news in news:
+            if item_news.provider_news_id not in seen:
+                result.append(item_news)
+                seen.add(item_news.provider_news_id)
+        return result
+
+    @classmethod
+    def parse_news_payload(
+        cls,
+        payload: dict[str, Any],
+        provider_id: str,
+        slug: str = "organization",
+    ) -> list[NewsItem]:
+        data = payload.get("data")
+        if not isinstance(data, dict) or not isinstance(data.get("items"), list):
+            return []
+        result: list[NewsItem] = []
+        for raw in data["items"]:
+            if not isinstance(raw, dict):
+                continue
+            text = " ".join(
+                str(raw.get("text") or raw.get("content") or "").split()
+            )
+            news_id = str(raw.get("id") or "")
+            uri = str(raw.get("uri") or "")
+            if not text or not news_id:
+                continue
+            photos: list[str] = []
+            for photo in raw.get("photos") or []:
+                if not isinstance(photo, dict):
+                    continue
+                template = photo.get("urlTemplate") or photo.get("url")
+                if isinstance(template, str) and template.startswith("http"):
+                    photos.append(template.replace("%s", "XL"))
+            published_at = cls._timestamp_value(raw.get("publicationTime"))
+            query = urllib.parse.urlencode(
+                {"posts[uri]": uri},
+                quote_via=urllib.parse.quote,
+                safe="",
+            )
+            result.append(
+                NewsItem(
+                    provider_news_id=news_id,
+                    text=text,
+                    published_at=published_at,
+                    photos=photos,
+                    url=(
+                        f"https://yandex.ru/maps/org/{slug}/{provider_id}/posts/"
+                        f"?{query}"
+                    ),
+                )
+            )
+        return result
+
+    async def _fetch_search_rankings(
+        self,
+        item: dict[str, Any],
+        city: str | None,
+    ) -> list[SearchRanking]:
+        queries = self.ranking_queries or self._categories(item)[:3]
+        if not queries:
+            return []
+        scope, scope_type, center, span = self._ranking_scope(item, city)
+        rankings = await asyncio.gather(
+            *(
+                self._fetch_search_ranking(
+                    query,
+                    str(item["id"]),
+                    item,
+                    scope,
+                    scope_type,
+                    center,
+                    span,
+                )
+                for query in queries
+            ),
+            return_exceptions=True,
+        )
+        return [ranking for ranking in rankings if isinstance(ranking, SearchRanking)]
+
+    async def _fetch_search_ranking(
+        self,
+        query: str,
+        provider_id: str,
+        item: dict[str, Any],
+        scope: str,
+        scope_type: str,
+        center: list[float],
+        span: list[float],
+    ) -> SearchRanking:
+        region = item.get("region") if isinstance(item.get("region"), dict) else {}
+        params = {
+            "ajax": "1",
+            "text": query,
+            "lang": "ru_RU" if self.language.startswith("ru") else self.language,
+            "yandex_gid": str(region.get("id") or item.get("geoId") or "0"),
+            "origin": "maps-url",
+            "results": "25",
+            "ll": self._coordinate_text(center),
+            "spn": self._coordinate_text(span),
+            "rspn": "1",
+            "snippets": (
+                "businessrating/1.x,businessimages/1.x,subtitle/1.x,"
+                "business_awards_experimental/1.x"
+            ),
+        }
+        search_params = {
+            "text": query,
+            "ll": params["ll"],
+            "spn": params["spn"],
+            "rspn": "1",
+        }
+        search_url = "https://yandex.ru/maps/?" + urllib.parse.urlencode(
+            search_params,
+            quote_via=urllib.parse.quote,
+            safe=",",
+        )
+        api_url = "https://yandex.ru/maps/api/search"
+        referer = search_url
+        csrf_token: str | None = None
+        organic_results: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        total_results: int | None = None
+        current_data: dict[str, Any] | None = None
+
+        try:
+            async with AsyncSession(
+                impersonate="chrome",
+                headers={"Referer": referer, "X-Retpath-Y": referer},
+                timeout=30,
+            ) as session:
+                for page in range(self.ranking_max_pages):
+                    page_params = dict(params)
+                    if page:
+                        if current_data is None:
+                            break
+                        page_params.update(
+                            {
+                                "origin": "maps-scroll",
+                                "skip": str(page * 25),
+                                "ctx": str(current_data.get("requestContext") or ""),
+                                "serpid": str(current_data.get("requestSerpId") or ""),
+                                "parent_reqid": str(current_data.get("requestId") or ""),
+                            }
+                        )
+                    payload, csrf_token = await self._signed_api_get(
+                        session,
+                        api_url,
+                        page_params,
+                        csrf_token,
+                    )
+                    data = payload.get("data")
+                    if not isinstance(data, dict):
+                        break
+                    current_data = data
+                    total_results = int(data.get("totalResultCount") or 0) or total_results
+                    items = data.get("items")
+                    if not isinstance(items, list) or not items:
+                        break
+                    for result in items:
+                        if not isinstance(result, dict) or result.get("type") != "business":
+                            continue
+                        result_id = str(result.get("id") or "")
+                        if not result_id or result_id in seen or result.get("isAdvert"):
+                            continue
+                        seen.add(result_id)
+                        organic_results.append(result)
+                    if provider_id in seen:
+                        break
+                    if total_results is not None and (page + 1) * 25 >= total_results:
+                        break
+        except (RequestsError, ValueError, TypeError):
+            pass
+
+        position = next(
+            (
+                index
+                for index, result in enumerate(organic_results, start=1)
+                if str(result.get("id")) == provider_id
+            ),
+            None,
+        )
+        return SearchRanking(
+            query=query,
+            position=position,
+            total_results=total_results,
+            checked_results=len(organic_results),
+            scope=scope,
+            scope_type=scope_type,
+            search_url=search_url,
+        )
+
+    @classmethod
+    async def _signed_api_get(
+        cls,
+        session: AsyncSession,
+        url: str,
+        params: dict[str, str],
+        csrf_token: str | None = None,
+    ) -> tuple[dict[str, Any], str | None]:
+        if csrf_token is None:
+            bootstrap = await session.get(url, params=params)
+            bootstrap.raise_for_status()
+            bootstrap_payload = bootstrap.json()
+            csrf_token = bootstrap_payload.get("csrfToken")
+            if not csrf_token:
+                return bootstrap_payload, None
+        signed_params = {**params, "csrfToken": str(csrf_token)}
+        signed_params["s"] = cls._query_signature(signed_params)
+        response = await session.get(url, params=signed_params)
+        response.raise_for_status()
+        return response.json(), csrf_token
 
     async def _fetch_all_reviews(
         self,
@@ -257,7 +540,9 @@ class YandexMapsProvider(PlaceProvider):
     @staticmethod
     def _query_signature(params: dict[str, str]) -> str:
         query = urllib.parse.urlencode(
-            sorted(params.items(), key=lambda pair: pair[0].casefold())
+            sorted(params.items(), key=lambda pair: pair[0].casefold()),
+            quote_via=urllib.parse.quote,
+            safe="",
         )
         value = 5381
         for character in query:
@@ -441,34 +726,55 @@ class YandexMapsProvider(PlaceProvider):
     @classmethod
     def parse_prices(cls, html: str, source_url: str) -> list[Service]:
         result: list[Service] = []
-        seen: set[tuple[str, str]] = set()
+        seen: set[str | tuple[str, str]] = set()
+        categories: list[dict[str, Any]] = []
         for payload in cls._state_payloads(html):
             for item in cls._walk(payload):
                 category_items = item.get("categoryItems")
                 if not isinstance(category_items, list):
                     continue
-                for raw in category_items:
-                    if not isinstance(raw, dict):
-                        continue
-                    name = " ".join(
-                        str(raw.get("title") or raw.get("name") or "").split()
+                categories.append(item)
+
+        # Яндекс дублирует несколько услуг в категории popular. Сначала
+        # обрабатываем реальные категории, чтобы дубль не потерял разбивку.
+        categories.sort(
+            key=lambda item: str(item.get("categoryName") or "").casefold()
+            == "popular"
+        )
+        for category in categories:
+            category_name = " ".join(
+                str(category.get("categoryName") or "").split()
+            )
+            if category_name.casefold() == "popular":
+                category_name = "Популярное"
+            for raw in category["categoryItems"]:
+                if not isinstance(raw, dict):
+                    continue
+                name = " ".join(
+                    str(raw.get("title") or raw.get("name") or "").split()
+                )
+                price = cls._price_text(raw)
+                if not name:
+                    continue
+                source_id = str(raw.get("sourceId") or "") or None
+                key: str | tuple[str, str] = source_id or (
+                    name.casefold(),
+                    price or "",
+                )
+                if key in seen:
+                    continue
+                result.append(
+                    Service(
+                        name=name,
+                        category=category_name or None,
+                        provider_service_id=source_id,
+                        price=price,
+                        duration=raw.get("description"),
+                        provider="yandex_maps",
+                        source_url=source_url,
                     )
-                    price = cls._price_text(raw)
-                    if not name:
-                        continue
-                    key = (name.casefold(), price or "")
-                    if key in seen:
-                        continue
-                    result.append(
-                        Service(
-                            name=name,
-                            price=price,
-                            duration=raw.get("description"),
-                            provider="yandex_maps",
-                            source_url=source_url,
-                        )
-                    )
-                    seen.add(key)
+                )
+                seen.add(key)
         return result
 
     @staticmethod
@@ -518,6 +824,176 @@ class YandexMapsProvider(PlaceProvider):
             if isinstance(category, dict) and category.get("name")
         ]
         return ", ".join(categories) or None
+
+    @staticmethod
+    def _categories(item: dict[str, Any]) -> list[str]:
+        result: list[str] = []
+        seen: set[str] = set()
+        for category in item.get("categories") or []:
+            if not isinstance(category, dict):
+                continue
+            name = " ".join(str(category.get("name") or "").split())
+            key = name.casefold()
+            if name and key not in seen:
+                result.append(name)
+                seen.add(key)
+        return result
+
+    @staticmethod
+    def _awards(item: dict[str, Any]) -> list[str]:
+        result: list[str] = []
+        awards = item.get("awards")
+        if isinstance(awards, dict):
+            good_place = awards.get("goodPlaceYear")
+            if good_place:
+                result.append(f"Хорошее место {good_place}")
+            if awards.get("ultimaGuide"):
+                result.append("Ultima Guide")
+
+        # In some cards Yandex exposes only the compact award marker.
+        snippet = item.get("modularSnippet")
+        snippet_awards = snippet.get("awards") if isinstance(snippet, dict) else []
+        if 0 in (snippet_awards or []) and not any(
+            award.startswith("Хорошее место") for award in result
+        ):
+            result.append("Хорошее место")
+        return result
+
+    @staticmethod
+    def _masters(item: dict[str, Any]) -> list[str]:
+        """Read only explicitly published, active staff from the Maps card.
+
+        Booking providers are deliberately ignored here. Their historic staff
+        entries belong to a separate online-booking report and must not leak
+        into the Yandex Maps view.
+        """
+        result: list[str] = []
+        seen: set[str] = set()
+        raw_staff: list[Any] = []
+        for key in ("masters", "staff", "specialists"):
+            value = item.get(key)
+            if isinstance(value, list):
+                raw_staff.extend(value)
+            elif isinstance(value, dict):
+                nested = value.get("items") or value.get("results")
+                if isinstance(nested, list):
+                    raw_staff.extend(nested)
+
+        inactive_statuses = {"inactive", "disabled", "archived", "deleted"}
+        for raw in raw_staff:
+            if isinstance(raw, str):
+                name = " ".join(raw.split())
+                role = ""
+            elif isinstance(raw, dict):
+                if any(raw.get(flag) is False for flag in ("active", "isActive", "enabled")):
+                    continue
+                if str(raw.get("status") or "").casefold() in inactive_statuses:
+                    continue
+                name = " ".join(
+                    str(raw.get("name") or raw.get("title") or raw.get("displayName") or "").split()
+                )
+                role = " ".join(
+                    str(raw.get("specialization") or raw.get("role") or raw.get("position") or "").split()
+                )
+            else:
+                continue
+            rendered = name + (f" — {role}" if role else "")
+            key = rendered.casefold()
+            if name and key not in seen:
+                result.append(rendered)
+                seen.add(key)
+        return result
+
+    @classmethod
+    def _ranking_scope(
+        cls,
+        item: dict[str, Any],
+        requested_city: str | None,
+    ) -> tuple[str, str, list[float], list[float]]:
+        region = item.get("region") if isinstance(item.get("region"), dict) else {}
+        composite = (
+            item.get("compositeAddress")
+            if isinstance(item.get("compositeAddress"), dict)
+            else {}
+        )
+        city = " ".join(
+            str(
+                composite.get("locality")
+                or (region.get("names") or {}).get("nominative")
+                or requested_city
+                or "город"
+            ).split()
+        )
+        coordinates = item.get("coordinates")
+        if not (
+            isinstance(coordinates, list)
+            and len(coordinates) >= 2
+            and all(isinstance(value, (int, float)) for value in coordinates[:2])
+        ):
+            coordinates = [region.get("longitude") or 0, region.get("latitude") or 0]
+        center = [float(coordinates[0]), float(coordinates[1])]
+
+        normalized_city = cls._normalized(city)
+        federal_city = normalized_city in {
+            "москва",
+            "мск",
+            "санктпетербург",
+            "спб",
+            "питер",
+        }
+        metro = item.get("metro")
+        if federal_city and isinstance(metro, list) and metro:
+            candidates = [station for station in metro if isinstance(station, dict)]
+            candidates.sort(key=lambda station: station.get("distanceValue") or math.inf)
+            station = candidates[0] if candidates else {}
+            station_name = " ".join(str(station.get("name") or "ближайшая станция").split())
+            station_coordinates = station.get("coordinates")
+            if isinstance(station_coordinates, list) and len(station_coordinates) >= 2:
+                center = [float(station_coordinates[0]), float(station_coordinates[1])]
+            return f"метро {station_name}", "metro", center, [0.04, 0.03]
+
+        zoom = region.get("zoom")
+        is_large = federal_city or (isinstance(zoom, (int, float)) and zoom <= 10)
+        if is_large:
+            district = " ".join(
+                str(composite.get("district") or composite.get("area") or "").split()
+            )
+            if not district:
+                district = "район рядом с заведением"
+            return district, "district", center, [0.10, 0.07]
+
+        bounds = region.get("bounds")
+        if (
+            isinstance(bounds, list)
+            and len(bounds) >= 2
+            and all(isinstance(point, list) and len(point) >= 2 for point in bounds[:2])
+        ):
+            west, south = bounds[0][:2]
+            east, north = bounds[1][:2]
+            center = [(float(west) + float(east)) / 2, (float(south) + float(north)) / 2]
+            span = [max(float(east) - float(west), 0.02), max(float(north) - float(south), 0.02)]
+        else:
+            span = [0.34, 0.23]
+        return city, "city", center, span
+
+    @staticmethod
+    def _coordinate_text(values: list[float]) -> str:
+        return ",".join(f"{float(value):.6f}".rstrip("0").rstrip(".") for value in values)
+
+    @staticmethod
+    def _timestamp_value(value: Any) -> str | None:
+        if value in (None, ""):
+            return None
+        try:
+            timestamp = float(value)
+        except (TypeError, ValueError):
+            return str(value)
+        if timestamp > 10_000_000_000:
+            timestamp /= 1000
+        try:
+            return datetime.fromtimestamp(timestamp, UTC).date().isoformat()
+        except (OverflowError, OSError, ValueError):
+            return str(value)
 
     @staticmethod
     def _booking_url(links: list[dict[str, Any]]) -> str | None:

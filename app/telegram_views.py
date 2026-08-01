@@ -6,7 +6,16 @@ from app.models import Review, SalonProfile
 from app.report import NOT_PUBLIC
 
 TEXT_LIMIT = 3800
-SECTIONS = ("main", "reviews", "summary", "hours", "services", "booking")
+SECTIONS = (
+    "main",
+    "reviews",
+    "summary",
+    "hours",
+    "services",
+    "masters",
+    "news",
+    "rankings",
+)
 
 
 @dataclass(frozen=True)
@@ -29,8 +38,12 @@ def render_section(
         return RenderedSection(render_hours(profile))
     if section == "services":
         return _page(_service_blocks(profile), page)
-    if section == "booking":
-        return _page(_booking_blocks(profile), page)
+    if section == "masters":
+        return RenderedSection(render_masters(profile))
+    if section == "news":
+        return _page(_news_blocks(profile), page)
+    if section == "rankings":
+        return RenderedSection(render_rankings(profile))
     return RenderedSection(render_main(profile))
 
 
@@ -47,6 +60,8 @@ def render_main(profile: SalonProfile) -> str:
         f"⭐ Оценка Яндекс Карт: {rating}",
         f"💬 На основной площадке: {published}",
         f"📝 Описание: {profile.description or NOT_PUBLIC}",
+        f"🏷 Категории: {', '.join(profile.categories) or NOT_PUBLIC}",
+        f"🏆 Награды: {', '.join(profile.awards) or NOT_PUBLIC}",
         "",
         f"Собрано текстов отзывов: {len(profile.reviews)}",
     ]
@@ -100,10 +115,11 @@ def section_keyboard(
     rows = [
         [button("🏢 Основное", "main")],
         [button("💬 Отзывы", "reviews"), button("🧠 Выжимка", "summary")],
-        [button("🕒 График", "hours"), button("✂️ Услуги и цены", "services")],
-        [button("👤 Мастера и запись", "booking")],
+        [button("🕒 График", "hours"), button("📰 Новости", "news")],
+        [button("✂️ Услуги и цены", "services")],
+        [button("👤 Мастера", "masters"), button("🔎 Место в поиске", "rankings")],
     ]
-    if total_pages > 1 and active in {"reviews", "services", "booking"}:
+    if total_pages > 1 and active in {"reviews", "services", "news"}:
         navigation: list[InlineKeyboardButton] = []
         if page > 0:
             navigation.append(
@@ -165,34 +181,74 @@ def _service_blocks(profile: SalonProfile) -> list[str]:
     if not profile.services:
         return [f"✂️ Услуги и цены\n\n{NOT_PUBLIC}"]
     blocks = [f"✂️ Услуги и цены\nНайдено позиций: {len(profile.services)}"]
+    categories: dict[str, list] = {}
     for service in profile.services:
-        details = " · ".join(
-            value for value in (service.price, service.duration) if value
-        )
-        provider = f" [{service.provider}]" if service.provider else ""
-        blocks.append(
-            f"• {service.name}{provider}"
-            + (f"\n  {details}" if details else "")
-        )
+        category = service.category or "Без категории"
+        categories.setdefault(category, []).append(service)
+    for category, services in categories.items():
+        blocks.append(f"📂 {category}")
+        for service in services:
+            details = " · ".join(
+                value for value in (service.price, service.duration) if value
+            )
+            blocks.append(
+                f"• {service.name}"
+                + (f"\n  {details}" if details else "")
+            )
     return blocks
 
 
-def _booking_blocks(profile: SalonProfile) -> list[str]:
-    blocks = ["👤 Мастера и запись"]
+def render_masters(profile: SalonProfile) -> str:
+    blocks = ["👤 Мастера из карточки Яндекс Карт"]
     if profile.masters:
         blocks.append("Мастера:\n" + "\n".join(f"• {item}" for item in profile.masters))
     else:
-        blocks.append(f"Мастера: {NOT_PUBLIC}")
-    if profile.available_slots:
-        blocks.append(
-            "Ближайшее свободное время:\n"
-            + "\n".join(f"• {item}" for item in profile.available_slots)
+        blocks.append(NOT_PUBLIC)
+    return "\n\n".join(blocks)
+
+
+def _news_blocks(profile: SalonProfile) -> list[str]:
+    if not profile.news:
+        return [f"📰 Новости\n\n{NOT_PUBLIC}"]
+    blocks = [f"📰 Все новости из Яндекс Карт\nНайдено: {len(profile.news)}"]
+    for index, item in enumerate(profile.news, start=1):
+        date = f" · {item.published_at}" if item.published_at else ""
+        photos = f"\nФото: {len(item.photos)}" if item.photos else ""
+        link = f"\nОткрыть: {item.url}" if item.url else ""
+        blocks.extend(
+            _split_large_block(
+                f"#{index}{date}\n{item.text}{photos}{link}"
+            )
         )
-    else:
-        blocks.append(f"Свободное время: {NOT_PUBLIC}")
-    if profile.booking_url:
-        blocks.append(f"Онлайн-запись: {profile.booking_url}")
     return blocks
+
+
+def render_rankings(profile: SalonProfile) -> str:
+    if not profile.search_rankings:
+        return f"🔎 Место в поиске Яндекс Карт\n\n{NOT_PUBLIC}"
+    scope_names = {"city": "город", "district": "район", "metro": "метро"}
+    blocks = ["🔎 Место в поиске Яндекс Карт"]
+    for ranking in profile.search_rankings:
+        scope_type = scope_names.get(ranking.scope_type, ranking.scope_type)
+        if ranking.position is not None:
+            result = f"{ranking.position}-е место"
+        else:
+            result = f"не найдено среди {ranking.checked_results} проверенных"
+        total = (
+            f"; результатов в выдаче: {ranking.total_results}"
+            if ranking.total_results is not None
+            else ""
+        )
+        link = f"\n  Поиск: {ranking.search_url}" if ranking.search_url else ""
+        blocks.append(
+            f"• «{ranking.query}»: {result}{total}\n"
+            f"  Область: {scope_type} — {ranking.scope}{link}"
+        )
+    blocks.append(
+        "Позиция — моментальный неперсонализированный срез без рекламы; "
+        "она может меняться от геолокации и времени."
+    )
+    return "\n\n".join(blocks)
 
 
 def _page(blocks: list[str], requested_page: int) -> RenderedSection:

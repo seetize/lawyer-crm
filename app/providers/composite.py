@@ -51,7 +51,15 @@ class CompositePlaceProvider(PlaceProvider):
         ):
             if data.get(field) is None:
                 data[field] = getattr(extra, field)
-        for field in ("opening_hours", "masters", "available_slots"):
+        for field in (
+            "opening_hours",
+            "categories",
+            "awards",
+            "masters",
+            "news",
+            "search_rankings",
+            "available_slots",
+        ):
             if not data.get(field):
                 data[field] = getattr(extra, field)
 
@@ -105,7 +113,12 @@ class CompositePlaceProvider(PlaceProvider):
     def _merge_services(base: list, extra: list) -> list:
         result = list(base)
         seen = {
-            (service.provider or "", service.name.casefold(), service.price or "")
+            (
+                service.provider or "",
+                service.name.casefold(),
+                service.price or "",
+                service.category or "",
+            )
             for service in base
         }
         for service in extra:
@@ -113,6 +126,7 @@ class CompositePlaceProvider(PlaceProvider):
                 service.provider or "",
                 service.name.casefold(),
                 service.price or "",
+                service.category or "",
             )
             if key not in seen:
                 result.append(service)

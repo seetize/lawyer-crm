@@ -5,7 +5,6 @@ from app.providers.demo import DemoPlaceProvider
 from app.providers.google import GooglePlacesProvider
 from app.providers.twogis_web import TwoGisEnrichedProvider
 from app.providers.yandex import YandexMapsProvider
-from app.providers.yclients import YClientsEnricher
 
 
 def build_provider(settings: Settings) -> PlaceProvider:
@@ -17,6 +16,12 @@ def build_provider(settings: Settings) -> PlaceProvider:
                 YandexMapsProvider(
                     settings.default_language,
                     max_review_pages=settings.yandex_max_review_pages,
+                    ranking_queries=[
+                        query.strip()
+                        for query in settings.yandex_ranking_queries.split(",")
+                        if query.strip()
+                    ],
+                    ranking_max_pages=settings.yandex_ranking_max_pages,
                 )
             )
         if settings.twogis_api_key:
@@ -35,12 +40,6 @@ def build_provider(settings: Settings) -> PlaceProvider:
             )
         if not providers:
             raise RuntimeError("Для 2gis нужен TWOGIS_API_KEY")
-        enrichers.append(
-            YClientsEnricher(
-                settings.yclients_partner_token,
-                settings.yclients_user_token,
-            )
-        )
         return CompositePlaceProvider(providers, enrichers=enrichers)
     if settings.data_provider == "google":
         if not settings.google_places_api_key:

@@ -22,11 +22,30 @@ class OrganizationReply(BaseModel):
 
 class Service(BaseModel):
     name: str
+    category: str | None = None
     provider_service_id: str | None = None
     price: str | None = None
     duration: str | None = None
     provider: str | None = None
     source_url: HttpUrl | None = None
+
+
+class NewsItem(BaseModel):
+    provider_news_id: str
+    text: str
+    published_at: str | None = None
+    photos: list[HttpUrl] = Field(default_factory=list)
+    url: HttpUrl | None = None
+
+
+class SearchRanking(BaseModel):
+    query: str
+    position: int | None = None
+    total_results: int | None = None
+    checked_results: int = 0
+    scope: str
+    scope_type: str
+    search_url: HttpUrl | None = None
 
 
 class SourceRef(BaseModel):
@@ -49,6 +68,8 @@ class SalonProfile(BaseModel):
     name: str
     address: str | None = None
     description: str | None = None
+    categories: list[str] = Field(default_factory=list)
+    awards: list[str] = Field(default_factory=list)
     rating: float | None = None
     reviews_count: int | None = None
     ratings: list[SourceRating] = Field(default_factory=list)
@@ -60,6 +81,8 @@ class SalonProfile(BaseModel):
     map_url: HttpUrl | None = None
     services: list[Service] = Field(default_factory=list)
     masters: list[str] = Field(default_factory=list)
+    news: list[NewsItem] = Field(default_factory=list)
+    search_rankings: list[SearchRanking] = Field(default_factory=list)
     available_slots: list[str] = Field(default_factory=list)
     booking_url: HttpUrl | None = None
     sources: list[SourceRef] = Field(default_factory=list)
