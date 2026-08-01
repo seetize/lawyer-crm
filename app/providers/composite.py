@@ -67,10 +67,9 @@ class CompositePlaceProvider(PlaceProvider):
             base.reviews,
             extra.reviews,
         )
-        data["services"] = CompositePlaceProvider._merge_services(
-            base.services,
-            extra.services,
-        )
+        # Yandex is the primary card and its category topology must stay exact.
+        # Other map providers are a fallback only when Yandex has no public menu.
+        data["services"] = base.services or extra.services
 
         known_ratings = {rating.provider for rating in base.ratings}
         data["ratings"] = base.ratings + [
@@ -108,27 +107,3 @@ class CompositePlaceProvider(PlaceProvider):
             f"{review.author} {review.published_at or ''} {review.text}".casefold().split()
         )
         return review.provider, normalized
-
-    @staticmethod
-    def _merge_services(base: list, extra: list) -> list:
-        result = list(base)
-        seen = {
-            (
-                service.provider or "",
-                service.name.casefold(),
-                service.price or "",
-                service.category or "",
-            )
-            for service in base
-        }
-        for service in extra:
-            key = (
-                service.provider or "",
-                service.name.casefold(),
-                service.price or "",
-                service.category or "",
-            )
-            if key not in seen:
-                result.append(service)
-                seen.add(key)
-        return result

@@ -2,6 +2,7 @@ from app.models import (
     OrganizationReply,
     Review,
     SalonProfile,
+    Service,
     SourceRating,
     SourceRef,
 )
@@ -28,6 +29,7 @@ def test_merge_keeps_yandex_primary_and_combines_all_source_reviews() -> None:
                 ],
             )
         ],
+        services=[Service(name="Маникюр", category="Ногти", price="1000 ₽")],
         sources=[SourceRef(provider="yandex_maps", provider_id="y1")],
     )
     twogis = SalonProfile(
@@ -46,6 +48,7 @@ def test_merge_keeps_yandex_primary_and_combines_all_source_reviews() -> None:
                 text="Хорошо",
             )
         ],
+        services=[Service(name="Услуга 2ГИС", price="900 ₽")],
         sources=[SourceRef(provider="2gis", provider_id="d1")],
     )
 
@@ -55,4 +58,5 @@ def test_merge_keeps_yandex_primary_and_combines_all_source_reviews() -> None:
     assert merged.rating == 4.9
     assert len(merged.reviews) == 2
     assert len(merged.ratings) == 2
+    assert [service.name for service in merged.services] == ["Маникюр"]
     assert merged.reviews[0].organization_replies[0].text == "Спасибо"
