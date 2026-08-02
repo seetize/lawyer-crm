@@ -105,7 +105,7 @@ YANDEX_RANKING_MAX_PAGES=20
 Запуск бота:
 
 ```powershell
-python -m app.bot
+python -B scripts/run_bot.py
 ```
 
 Примеры запросов:

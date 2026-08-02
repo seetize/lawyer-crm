@@ -28,7 +28,9 @@ whole repository.
 7. For R2/R3 changes, obtain an independent review of the actual diff. The
    reviewer must not rely on the implementer's self-assessment.
 8. Fix blocking findings once and rerun affected checks. Do not repeat a failed
-   action without a new hypothesis or change.
+   action without a new hypothesis or change. Before retrying a known failure,
+   check the exact fingerprint in `.harness/memory/lessons.json`; never apply the
+   same strategy twice to the same fingerprint in one run.
 9. Update `.harness/memory/` only with durable, verified knowledge. Never store
    raw transcripts, secrets, transient rankings, or unverified guesses.
 10. Finish only with evidence: changed files, commands and results, residual
@@ -112,5 +114,8 @@ reproduction evidence, and the smallest viable fix. A reviewer may return
 - `failures.md`: reproduced symptom, root cause, fix, and regression evidence.
 
 Promote a lesson only when it is reusable and supported by code, a test, or a
-documented live check. Harness changes pass the same review and verification as
-product changes.
+documented live check. A machine-applicable lesson must match fingerprint,
+action, and scope; name an allowlisted strategy; state the root cause; and carry
+commit, regression-test, and independent-review evidence. Stored lessons never
+contain shell commands or arbitrary instructions. Harness changes pass the same
+review and verification as product changes.

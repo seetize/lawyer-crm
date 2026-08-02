@@ -2,12 +2,14 @@ project: beauty-inspector
 language: python
 python: ">=3.12"
 entrypoints:
-  bot: ".venv/Scripts/python.exe -m app.bot"
+  bot: ".venv/Scripts/python.exe -B scripts/run_bot.py"
   api: ".venv/Scripts/python.exe -m uvicorn app.api:app"
 commands:
   targeted_tests: ".venv/Scripts/python.exe -B -m pytest -p no:cacheprovider -q <tests>"
   verify: "powershell -ExecutionPolicy Bypass -File scripts/verify.ps1"
   live_verify: "powershell -ExecutionPolicy Bypass -File scripts/verify.ps1 -Live"
+  recover: "powershell -ExecutionPolicy RemoteSigned -File scripts/recover_harness.ps1"
+  watchdog: "powershell -ExecutionPolicy RemoteSigned -File scripts/watchdog.ps1 -Once"
 paths:
   source: app
   tests: tests
@@ -28,6 +30,10 @@ risk_paths:
     - .codex
     - .harness
     - scripts/harness.ps1
+    - scripts/harness_runtime.py
+    - scripts/recover_harness.ps1
+    - scripts/watchdog.ps1
+    - scripts/install_watchdog.ps1
     - .env.example
 test_map:
   app/providers/yandex.py: tests/test_yandex.py
