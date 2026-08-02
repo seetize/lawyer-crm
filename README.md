@@ -202,6 +202,13 @@ Telegram QA commands are `/city_status`, `/catalog`, `/passport` and
 `/competitors`. Mutating commands `/crawl_city` and `/refresh_city` fail closed
 unless the sender is listed in `TELEGRAM_ADMIN_IDS`.
 
+The Telegram catalogue is DB-first: category selection is followed by city,
+district or available metro scope, then deduplicated location buttons and a
+stored passport. Districts and metro stations are durable catalogue entities;
+typed zone names are normalized before lookup. Browsing never calls map
+providers. The `Сравнить` button calculates a grounded, token-free comparison
+from saved categories, coordinates, services, ratings and review counts.
+
 HTTP readiness and catalogue endpoints:
 
 - `GET /health/live` and `GET /health/ready`;

@@ -79,6 +79,19 @@ class CategoryRow(Base):
     active: Mapped[bool] = mapped_column(Boolean, default=True)
 
 
+class AreaRow(Base):
+    __tablename__ = "catalog_areas"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    city_id: Mapped[str] = mapped_column(ForeignKey("catalog_cities.id"), index=True)
+    kind: Mapped[str] = mapped_column(String(20), index=True)
+    name: Mapped[str] = mapped_column(String(200))
+    normalized_name: Mapped[str] = mapped_column(String(200), index=True)
+    source: Mapped[str] = mapped_column(String(40), default="yandex_profile")
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    __table_args__ = (UniqueConstraint("city_id", "kind", "normalized_name"),)
+
+
 class LocationRow(Base):
     __tablename__ = "catalog_locations"
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
@@ -95,6 +108,7 @@ class LocationRow(Base):
     profile_json: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     profile_hash: Mapped[str | None] = mapped_column(String(64))
     profile_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    area_hash: Mapped[str | None] = mapped_column(String(64), index=True)
     completeness: Mapped[float] = mapped_column(Float, default=0.0)
     first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
@@ -136,6 +150,16 @@ class LocationCategoryRow(Base):
     category_id: Mapped[str] = mapped_column(ForeignKey("catalog_categories.id"), primary_key=True)
     first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
+class LocationAreaRow(Base):
+    __tablename__ = "catalog_location_areas"
+    location_id: Mapped[str] = mapped_column(ForeignKey("catalog_locations.id"), primary_key=True)
+    area_id: Mapped[str] = mapped_column(ForeignKey("catalog_areas.id"), primary_key=True)
+    confidence: Mapped[float] = mapped_column(Float, default=1.0)
+    priority: Mapped[int] = mapped_column(Integer, default=0)
+    source: Mapped[str] = mapped_column(String(40), default="yandex_profile")
     active: Mapped[bool] = mapped_column(Boolean, default=True)
 
 
@@ -780,6 +804,10 @@ class CatalogRepository:
         *,
         city_name: str | None = None,
         query: str | None = None,
+        category_id: str | None = None,
+        category_query: str | None = None,
+        zone_type: str | None = None,
+        zone_name: str | None = None,
         limit: int = 50,
         offset: int = 0,
     ) -> list[dict[str, Any]]:
@@ -799,15 +827,128 @@ class CatalogRepository:
                         LocationRow.normalized_address.like(pattern),
                     )
                 )
+            if category_id or category_query:
+                statement = statement.join(
+                    LocationCategoryRow,
+                    LocationCategoryRow.location_id == LocationRow.id,
+                ).join(
+                    CategoryRow,
+                    CategoryRow.id == LocationCategoryRow.category_id,
+                ).where(LocationCategoryRow.active.is_(True))
+                if category_id:
+                    statement = statement.where(CategoryRow.id == category_id)
+                if category_query:
+                    statement = statement.where(
+                        CategoryRow.key.like(f"%{normalize_text(category_query)}%")
+                    )
+            if zone_type and zone_name and zone_type in {"district", "metro"}:
+                statement = statement.join(
+                    LocationAreaRow,
+                    LocationAreaRow.location_id == LocationRow.id,
+                ).join(AreaRow, AreaRow.id == LocationAreaRow.area_id).where(
+                    LocationAreaRow.active.is_(True),
+                    AreaRow.active.is_(True),
+                    AreaRow.kind == zone_type,
+                    AreaRow.normalized_name == normalize_text(zone_name),
+                )
             rows = session.execute(
-                statement.order_by(LocationRow.canonical_name).offset(offset).limit(min(limit, 100))
+                statement.distinct()
+                .order_by(LocationRow.canonical_name)
+                .offset(offset)
+                .limit(min(limit, 100))
             ).all()
             return [self._location_summary(session, row, city) for row, city in rows]
+
+    def list_categories(
+        self,
+        city_name: str,
+        query: str | None = None,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        with Session(self.engine) as session:
+            statement = (
+                select(
+                    CategoryRow.id,
+                    CategoryRow.display_name,
+                    func.count(func.distinct(LocationRow.id)),
+                )
+                .join(LocationCategoryRow, LocationCategoryRow.category_id == CategoryRow.id)
+                .join(LocationRow, LocationRow.id == LocationCategoryRow.location_id)
+                .join(CityRow, CityRow.id == LocationRow.city_id)
+                .where(
+                    CityRow.normalized_name == normalize_text(city_name),
+                    LocationRow.status == "active",
+                    LocationCategoryRow.active.is_(True),
+                )
+            )
+            if query:
+                statement = statement.where(
+                    CategoryRow.key.like(f"%{normalize_text(query)}%")
+                )
+            rows = session.execute(
+                statement.group_by(CategoryRow.id, CategoryRow.display_name)
+                .order_by(func.count(func.distinct(LocationRow.id)).desc(), CategoryRow.display_name)
+                .limit(min(limit, 30))
+            ).all()
+            return [
+                {"id": category_id, "name": name, "count": int(count)}
+                for category_id, name, count in rows
+            ]
+
+    def get_category(self, category_id: str) -> dict[str, str] | None:
+        with Session(self.engine) as session:
+            row = session.get(CategoryRow, category_id)
+            if row is None or not row.active:
+                return None
+            return {"id": row.id, "name": row.display_name}
+
+    def list_zones(
+        self,
+        city_name: str,
+        zone_type: str,
+        *,
+        category_id: str | None = None,
+        category_query: str | None = None,
+        limit: int = 30,
+    ) -> list[dict[str, Any]]:
+        if zone_type not in {"district", "metro"}:
+            return []
+        with Session(self.engine) as session:
+            statement = (
+                select(AreaRow.name, func.count(func.distinct(LocationRow.id)))
+                .join(LocationAreaRow, LocationAreaRow.area_id == AreaRow.id)
+                .join(LocationRow, LocationRow.id == LocationAreaRow.location_id)
+                .join(CityRow, CityRow.id == LocationRow.city_id)
+                .where(
+                    CityRow.normalized_name == normalize_text(city_name),
+                    LocationRow.status == "active",
+                    AreaRow.kind == zone_type,
+                    AreaRow.active.is_(True),
+                    LocationAreaRow.active.is_(True),
+                )
+            )
+            if category_id or category_query:
+                statement = statement.join(
+                    LocationCategoryRow,
+                    LocationCategoryRow.location_id == LocationRow.id,
+                ).join(CategoryRow, CategoryRow.id == LocationCategoryRow.category_id)
+                if category_id:
+                    statement = statement.where(CategoryRow.id == category_id)
+                if category_query:
+                    statement = statement.where(
+                        CategoryRow.key.like(f"%{normalize_text(category_query)}%")
+                    )
+            rows = session.execute(
+                statement.group_by(AreaRow.id, AreaRow.name)
+                .order_by(func.count(func.distinct(LocationRow.id)).desc(), AreaRow.name)
+                .limit(min(limit, 50))
+            ).all()
+            return [{"name": name, "count": int(count)} for name, count in rows]
 
     def get_location(self, location_id: str) -> dict[str, Any] | None:
         with Session(self.engine) as session:
             row = session.get(LocationRow, location_id)
-            if row is None:
+            if row is None or row.status != "active":
                 return None
             city = session.get(CityRow, row.city_id)
             result = self._location_summary(session, row, city.name if city else "unknown")
@@ -833,6 +974,30 @@ class CatalogRepository:
             .join(LocationCategoryRow, LocationCategoryRow.category_id == CategoryRow.id)
             .where(LocationCategoryRow.location_id == row.id, LocationCategoryRow.active.is_(True))
         ).all()
+        areas = session.execute(
+            select(AreaRow.kind, AreaRow.name)
+            .join(LocationAreaRow, LocationAreaRow.area_id == AreaRow.id)
+            .where(
+                LocationAreaRow.location_id == row.id,
+                LocationAreaRow.active.is_(True),
+                AreaRow.active.is_(True),
+            )
+            .order_by(LocationAreaRow.priority, AreaRow.name)
+        ).all()
+        districts = [name for kind, name in areas if kind == "district"]
+        metros = [name for kind, name in areas if kind == "metro"]
+        primary_source = session.scalar(
+            select(SourceCardRow)
+            .where(
+                SourceCardRow.location_id == row.id,
+                SourceCardRow.active.is_(True),
+            )
+            .order_by(
+                (SourceCardRow.provider == "yandex_maps").desc(),
+                SourceCardRow.last_seen_at.desc(),
+            )
+        )
+        profile = row.profile_json or {}
         return {
             "id": row.id,
             "name": row.canonical_name,
@@ -840,7 +1005,18 @@ class CatalogRepository:
             "city": city,
             "longitude": row.longitude,
             "latitude": row.latitude,
+            "district": districts[0] if districts else None,
+            "metro": metros[0] if metros else None,
+            "districts": districts,
+            "metros": metros,
             "categories": list(categories),
+            "rating": profile.get("rating") or (
+                primary_source.rating if primary_source else None
+            ),
+            "reviews_count": profile.get("reviews_count") or (
+                primary_source.reviews_count if primary_source else None
+            ),
+            "has_passport": row.profile_json is not None,
             "completeness": row.completeness,
             "updated_at": row.updated_at.isoformat() if row.updated_at else None,
         }
@@ -895,6 +1071,27 @@ class CatalogRepository:
             source.detail_retry_at = utc_now() + timedelta(minutes=delay_minutes)
             source.detail_error_code = code[:64]
 
+    def backfill_profile_areas(self, limit: int = 1000) -> int:
+        updated = 0
+        with Session(self.engine) as session, session.begin():
+            locations = session.scalars(
+                select(LocationRow)
+                .where(
+                    LocationRow.profile_json.is_not(None),
+                    LocationRow.area_hash.is_(None),
+                )
+                .order_by(LocationRow.updated_at)
+                .limit(max(1, min(limit, 5000)))
+            ).all()
+            for location in locations:
+                try:
+                    profile = SalonProfile.model_validate(location.profile_json)
+                except (TypeError, ValueError):
+                    continue
+                self._replace_profile_areas(session, location, profile)
+                updated += 1
+        return updated
+
     def reconcile_completed_jobs(self, job_ids: Iterable[str]) -> None:
         ids = list(dict.fromkeys(job_ids))
         if not ids:
@@ -946,7 +1143,8 @@ class CatalogRepository:
                     )
                 ).all()
                 for membership in memberships:
-                    membership.active = membership.location_id in seen_locations
+                    if membership.location_id in seen_locations:
+                        membership.active = True
             location_ids = {location.id for _source, location in provider_sources}
             for location_id in location_ids:
                 has_active_source = session.scalar(
@@ -984,6 +1182,7 @@ class CatalogRepository:
             location.profile_hash = content_hash
             location.profile_checked_at = utc_now()
             location.completeness = profile_completeness(profile)
+            self._replace_profile_areas(session, location, profile)
             location.updated_at = utc_now()
             snapshot = session.scalar(
                 select(PassportSnapshotRow).where(
@@ -1023,6 +1222,71 @@ class CatalogRepository:
             )
             return True
 
+    @staticmethod
+    def _replace_profile_areas(
+        session: Session,
+        location: LocationRow,
+        profile: SalonProfile,
+    ) -> None:
+        desired = []
+        if profile.district:
+            desired.append(("district", profile.district))
+        desired.extend(("metro", station) for station in profile.metro_stations)
+        desired = list(dict.fromkeys(desired))
+        area_hash = stable_hash(
+            [(kind, normalize_text(name)) for kind, name in desired]
+        )
+        if location.area_hash == area_hash:
+            return
+        existing = session.scalars(
+            select(LocationAreaRow).where(
+                LocationAreaRow.location_id == location.id,
+                LocationAreaRow.source == "yandex_profile",
+            )
+        ).all()
+        for membership in existing:
+            membership.active = False
+        for priority, (kind, name) in enumerate(desired):
+            normalized = normalize_text(name)
+            area = session.scalar(
+                select(AreaRow).where(
+                    AreaRow.city_id == location.city_id,
+                    AreaRow.kind == kind,
+                    AreaRow.normalized_name == normalized,
+                )
+            )
+            if area is None:
+                area = AreaRow(
+                    id=str(uuid.uuid4()),
+                    city_id=location.city_id,
+                    kind=kind,
+                    name=name,
+                    normalized_name=normalized,
+                )
+                session.add(area)
+                session.flush()
+            else:
+                area.name = name
+                area.active = True
+                area.updated_at = utc_now()
+            membership = session.get(
+                LocationAreaRow,
+                {"location_id": location.id, "area_id": area.id},
+            )
+            if membership is None:
+                session.add(
+                    LocationAreaRow(
+                        location_id=location.id,
+                        area_id=area.id,
+                        priority=priority,
+                    )
+                )
+            else:
+                membership.active = True
+                membership.confidence = 1.0
+                membership.priority = priority
+        location.area_hash = area_hash
+
     def location_features(self, city_name: str) -> list[dict[str, Any]]:
         with Session(self.engine) as session:
             rows = session.scalars(
@@ -1040,6 +1304,17 @@ class CatalogRepository:
                     ).all()
                 )
                 profile = row.profile_json or {}
+                primary_source = session.scalar(
+                    select(SourceCardRow)
+                    .where(
+                        SourceCardRow.location_id == row.id,
+                        SourceCardRow.active.is_(True),
+                    )
+                    .order_by(
+                        (SourceCardRow.provider == "yandex_maps").desc(),
+                        SourceCardRow.last_seen_at.desc(),
+                    )
+                )
                 service_names = {
                     normalize_text(str(item.get("name") or ""))
                     for item in profile.get("services") or []
@@ -1049,12 +1324,46 @@ class CatalogRepository:
                     {
                         "id": row.id,
                         "name": row.canonical_name,
+                        "address": row.canonical_address,
                         "latitude": row.latitude,
                         "longitude": row.longitude,
                         "categories": categories,
                         "services": service_names,
-                        "rating": profile.get("rating"),
-                        "reviews_count": profile.get("reviews_count"),
+                        "rating": profile.get("rating") or (
+                            primary_source.rating if primary_source else None
+                        ),
+                        "reviews_count": profile.get("reviews_count") or (
+                            primary_source.reviews_count if primary_source else None
+                        ),
+                        "district": next(
+                            (
+                                name
+                                for kind, name in session.execute(
+                                    select(AreaRow.kind, AreaRow.name)
+                                    .join(LocationAreaRow, LocationAreaRow.area_id == AreaRow.id)
+                                    .where(
+                                        LocationAreaRow.location_id == row.id,
+                                        LocationAreaRow.active.is_(True),
+                                    )
+                                    .order_by(LocationAreaRow.priority, AreaRow.name)
+                                ).all()
+                                if kind == "district"
+                            ),
+                            None,
+                        ),
+                        "metros": [
+                            name
+                            for kind, name in session.execute(
+                                select(AreaRow.kind, AreaRow.name)
+                                .join(LocationAreaRow, LocationAreaRow.area_id == AreaRow.id)
+                                .where(
+                                    LocationAreaRow.location_id == row.id,
+                                    LocationAreaRow.active.is_(True),
+                                )
+                                .order_by(LocationAreaRow.priority, AreaRow.name)
+                            ).all()
+                            if kind == "metro"
+                        ],
                     }
                 )
             return result
@@ -1102,7 +1411,9 @@ class CatalogRepository:
 
     def status(self, city_name: str | None = None) -> dict[str, Any]:
         with Session(self.engine) as session:
-            location_query = select(func.count(LocationRow.id))
+            location_query = select(func.count(LocationRow.id)).where(
+                LocationRow.status == "active"
+            )
             job_query = select(CrawlJobRow.status, func.count(CrawlJobRow.id)).group_by(CrawlJobRow.status)
             if city_name:
                 normalized = normalize_text(city_name)
@@ -1111,7 +1422,8 @@ class CatalogRepository:
             locations = int(session.scalar(location_query) or 0)
             jobs = {status: count for status, count in session.execute(job_query).all()}
             profile_query = select(func.count(LocationRow.id)).where(
-                LocationRow.profile_json.is_not(None)
+                LocationRow.profile_json.is_not(None),
+                LocationRow.status == "active",
             )
             if city_name:
                 profile_query = profile_query.join(CityRow).where(

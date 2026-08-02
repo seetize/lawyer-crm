@@ -186,6 +186,18 @@ def test_ranking_scope_uses_city_and_metro_rules() -> None:
     assert metro[2] == [37.605, 55.765]
 
 
+def test_yandex_profile_keeps_unique_metro_stations() -> None:
+    assert YandexMapsProvider._metro_stations(
+        {
+            "metro": [
+                {"name": "Тверская"},
+                {"name": "Тверская"},
+                {"name": "Пушкинская"},
+            ]
+        }
+    ) == ["Тверская", "Пушкинская"]
+
+
 def test_yandex_web_api_signature_is_stable() -> None:
     signature = YandexMapsProvider._query_signature(
         {

@@ -216,6 +216,7 @@ class YandexMapsProvider(PlaceProvider):
             address=item.get("fullAddress") or item.get("address"),
             city=region_names.get("nominative"),
             district=district,
+            metro_stations=cls._metro_stations(item),
             latitude=latitude,
             longitude=longitude,
             phones=phones,
@@ -245,6 +246,15 @@ class YandexMapsProvider(PlaceProvider):
                 )
             ],
         )
+
+    @staticmethod
+    def _metro_stations(item: dict[str, Any]) -> list[str]:
+        stations = []
+        for station in item.get("metro") or []:
+            if not isinstance(station, dict) or not station.get("name"):
+                continue
+            stations.append(str(station["name"]).strip())
+        return list(dict.fromkeys(station for station in stations if station))
 
     async def _fetch_news(self, item: dict[str, Any]) -> list[NewsItem]:
         previews = item.get("eventsPreviews")

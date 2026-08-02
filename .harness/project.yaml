@@ -48,5 +48,6 @@ test_map:
   app/telegram_views.py: tests/test_telegram_views.py
   app/bot.py: tests/test_bot.py
   app/catalog: tests/test_catalog.py
+  app/catalog/telegram_ui.py: tests/test_catalog_telegram_ui.py
   app/api.py: tests/test_catalog_api.py
   app/agents: tests/test_report.py

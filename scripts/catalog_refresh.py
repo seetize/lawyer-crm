@@ -15,6 +15,7 @@ from app.config import Settings
 async def run(force: bool, discovery_only: bool) -> dict:
     settings = Settings()
     repository = build_catalog_repository(settings)
+    areas_backfilled = await asyncio.to_thread(repository.backfill_profile_areas)
     service = build_catalog_service(settings, repository)
     summaries = await service.crawl_city(
         build_city_spec(settings),
@@ -41,6 +42,7 @@ async def run(force: bool, discovery_only: bool) -> dict:
         "enrichment": enrichment,
         "competitor_edges": competitors,
         "cleanup": cleanup,
+        "areas_backfilled": areas_backfilled,
     }
 
 

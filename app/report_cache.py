@@ -12,6 +12,7 @@ class ReportView:
     owner_user_id: int
     profile: SalonProfile
     created_at: float
+    location_id: str | None = None
 
 
 class MemoryReportCache:
@@ -27,7 +28,12 @@ class MemoryReportCache:
         self._items: dict[str, ReportView] = {}
         self._lock = asyncio.Lock()
 
-    async def put(self, owner_user_id: int, profile: SalonProfile) -> str:
+    async def put(
+        self,
+        owner_user_id: int,
+        profile: SalonProfile,
+        location_id: str | None = None,
+    ) -> str:
         async with self._lock:
             self._purge_expired()
             while len(self._items) >= self.max_items:
@@ -41,6 +47,7 @@ class MemoryReportCache:
                 owner_user_id=owner_user_id,
                 profile=profile,
                 created_at=self.clock(),
+                location_id=location_id,
             )
             return token
 
@@ -51,6 +58,14 @@ class MemoryReportCache:
             if view is None or view.owner_user_id != owner_user_id:
                 return None
             return view.profile
+
+    async def get_view(self, token: str, owner_user_id: int) -> ReportView | None:
+        async with self._lock:
+            self._purge_expired()
+            view = self._items.get(token)
+            if view is None or view.owner_user_id != owner_user_id:
+                return None
+            return view
 
     def _purge_expired(self) -> None:
         threshold = self.clock() - self.ttl_seconds

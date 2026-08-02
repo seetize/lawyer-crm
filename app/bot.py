@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import os
+import secrets
 import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
@@ -11,7 +12,14 @@ from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import CallbackQuery, KeyboardButton, Message, ReplyKeyboardMarkup
+from aiogram.types import (
+    CallbackQuery,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    KeyboardButton,
+    Message,
+    ReplyKeyboardMarkup,
+)
 
 from app.config import get_settings
 from app.providers import build_provider
@@ -28,6 +36,16 @@ from app.catalog.runtime import (
     build_city_spec,
 )
 from app.catalog.service import CityCatalogService
+from app.catalog.comparison import build_comparison_report
+from app.catalog.telegram_ui import (
+    category_keyboard,
+    comparison_back_keyboard,
+    comparison_scope_keyboard,
+    locations_keyboard,
+    scope_keyboard,
+    stored_card_text,
+    zones_keyboard,
+)
 from app.async_runtime import configure_asyncio_policy
 
 router = Router()
@@ -48,6 +66,11 @@ STATUS_BUTTON = "📊 Статус сбора"
 class SearchFlow(StatesGroup):
     waiting_city = State()
     waiting_name = State()
+
+
+class CatalogFlow(StatesGroup):
+    waiting_category = State()
+    waiting_zone = State()
 
 
 def main_keyboard() -> ReplyKeyboardMarkup:
@@ -171,7 +194,7 @@ async def city_status_command(message: Message) -> None:
 
 @router.message(Command("catalog"))
 @router.message(F.text == CATALOG_BUTTON)
-async def catalog_command(message: Message) -> None:
+async def catalog_command(message: Message, state: FSMContext) -> None:
     if catalog_repository is None:
         await message.answer("Городской каталог ещё не инициализирован.")
         return
@@ -180,24 +203,405 @@ async def catalog_command(message: Message) -> None:
         if message.text == CATALOG_BUTTON
         else (message.text or "").partition(" ")[2].strip() or None
     )
+    data = await state.get_data()
+    city = data.get("city") or get_settings().catalog_city
+    categories = await asyncio.to_thread(
+        catalog_repository.list_categories,
+        city,
+        query,
+        15,
+    )
+    if not categories:
+        await message.answer(
+            f"В сохранённом каталоге города {city} такая группа пока не найдена. "
+            "Попробуйте другое название — новый парсинг сейчас не запускается."
+        )
+        return
+    await state.update_data(catalog_city=city)
+    if query and len(categories) == 1:
+        await select_catalog_category(message, state, categories[0])
+        return
+    await state.set_state(CatalogFlow.waiting_category)
+    await message.answer(
+        f"📚 Каталог · {city}\nВыберите группу или напишите её название:",
+        reply_markup=category_keyboard(categories),
+    )
+
+
+@router.message(CatalogFlow.waiting_category)
+async def catalog_category_text(message: Message, state: FSMContext) -> None:
+    if catalog_repository is None:
+        return
+    query = " ".join((message.text or "").split())
+    if query == BACK_BUTTON:
+        await state.set_state(None)
+        await message.answer("Возвращаюсь в главное меню.", reply_markup=main_keyboard())
+        return
+    data = await state.get_data()
+    city = data.get("catalog_city") or get_settings().catalog_city
+    categories = await asyncio.to_thread(
+        catalog_repository.list_categories, city, query, 15
+    )
+    if not categories:
+        await message.answer("Такая группа в сохранённом каталоге не найдена.")
+        return
+    exact = next(
+        (item for item in categories if normalize_catalog_text(item["name"]) == normalize_catalog_text(query)),
+        None,
+    )
+    if exact or len(categories) == 1:
+        await select_catalog_category(message, state, exact or categories[0])
+        return
+    await message.answer(
+        "Нашлось несколько похожих групп. Выберите нужную:",
+        reply_markup=category_keyboard(categories),
+    )
+
+
+@router.callback_query(F.data.startswith("cg:"))
+async def catalog_category_callback(callback: CallbackQuery, state: FSMContext) -> None:
+    if catalog_repository is None or callback.message is None:
+        return
+    category_id = (callback.data or "").partition(":")[2]
+    category = await asyncio.to_thread(catalog_repository.get_category, category_id)
+    if category is None:
+        await callback.answer("Категория больше не доступна.", show_alert=True)
+        return
+    await callback.answer()
+    await select_catalog_category(callback.message, state, category)
+
+
+async def select_catalog_category(
+    message: Message,
+    state: FSMContext,
+    category: dict,
+) -> None:
+    if catalog_repository is None:
+        return
+    data = await state.get_data()
+    city = data.get("catalog_city") or data.get("city") or get_settings().catalog_city
+    await state.update_data(
+        catalog_city=city,
+        catalog_category_id=category["id"],
+        catalog_category_name=category["name"],
+    )
+    metros = await asyncio.to_thread(
+        catalog_repository.list_zones,
+        city,
+        "metro",
+        category_id=category["id"],
+    )
+    await state.set_state(None)
+    await message.answer(
+        f"{category['name']} · {city}\nВыберите зону поиска:",
+        reply_markup=scope_keyboard(True, bool(metros)),
+    )
+
+
+@router.callback_query(F.data.startswith("cs:"))
+async def catalog_scope_callback(callback: CallbackQuery, state: FSMContext) -> None:
+    if callback.message is None:
+        return
+    scope = (callback.data or "").partition(":")[2]
+    if scope not in {"city", "district", "metro"}:
+        await callback.answer("Некорректная зона.", show_alert=True)
+        return
+    await callback.answer()
+    if scope == "city":
+        await state.update_data(catalog_zone_type=None, catalog_zone_name=None)
+        await show_catalog_page(callback.message, state, 0)
+        return
+    await show_zone_selection(callback.message, state, scope, action="browse")
+
+
+async def show_zone_selection(
+    message: Message,
+    state: FSMContext,
+    zone_type: str,
+    *,
+    action: str,
+) -> None:
+    if catalog_repository is None:
+        return
+    data = await state.get_data()
+    city = data.get("catalog_city") or get_settings().catalog_city
+    zones = await asyncio.to_thread(
+        catalog_repository.list_zones,
+        city,
+        zone_type,
+        category_id=data.get("catalog_category_id") if action == "browse" else None,
+    )
+    token = secrets.token_hex(3)
+    await state.update_data(
+        catalog_token=token,
+        catalog_zone_options=[zone["name"] for zone in zones],
+        catalog_zone_type=zone_type,
+        catalog_zone_action=action,
+    )
+    await state.set_state(CatalogFlow.waiting_zone)
+    label = "станцию метро" if zone_type == "metro" else "район"
+    await message.answer(
+        f"Выберите {label} кнопкой или напишите название:",
+        reply_markup=zones_keyboard(zones[:15], token, zone_type),
+    )
+
+
+@router.callback_query(F.data.startswith("ct:"))
+async def catalog_typed_zone_callback(callback: CallbackQuery, state: FSMContext) -> None:
+    parts = (callback.data or "").split(":")
+    data = await state.get_data()
+    if len(parts) != 3 or parts[1] != data.get("catalog_token"):
+        await callback.answer("Меню устарело. Откройте каталог снова.", show_alert=True)
+        return
+    await callback.answer()
+    await state.set_state(CatalogFlow.waiting_zone)
+    if callback.message:
+        await callback.message.answer("Напишите название зоны текстом.")
+
+
+@router.callback_query(F.data.startswith("cz:"))
+async def catalog_zone_callback(callback: CallbackQuery, state: FSMContext) -> None:
+    parts = (callback.data or "").split(":")
+    data = await state.get_data()
+    if len(parts) != 3 or parts[1] != data.get("catalog_token"):
+        await callback.answer("Меню устарело. Откройте каталог снова.", show_alert=True)
+        return
+    try:
+        zone_name = data.get("catalog_zone_options", [])[int(parts[2])]
+    except (ValueError, IndexError):
+        await callback.answer("Зона больше не доступна.", show_alert=True)
+        return
+    await callback.answer()
+    if callback.message:
+        await apply_catalog_zone(callback.message, state, zone_name)
+
+
+@router.message(CatalogFlow.waiting_zone)
+async def catalog_zone_text(message: Message, state: FSMContext) -> None:
+    zone_name = " ".join((message.text or "").split())
+    if zone_name == BACK_BUTTON:
+        await state.set_state(None)
+        await message.answer("Возвращаюсь в главное меню.", reply_markup=main_keyboard())
+        return
+    await apply_catalog_zone(message, state, zone_name)
+
+
+async def apply_catalog_zone(message: Message, state: FSMContext, zone_name: str) -> None:
+    data = await state.get_data()
+    action = data.get("catalog_zone_action", "browse")
+    await state.update_data(catalog_zone_name=zone_name)
+    await state.set_state(None)
+    if action == "compare":
+        await send_catalog_comparison(
+            message,
+            state,
+            data.get("compare_location_id"),
+            data.get("catalog_zone_type"),
+            zone_name,
+        )
+        return
+    await show_catalog_page(message, state, 0)
+
+
+async def show_catalog_page(message: Message, state: FSMContext, page: int) -> None:
+    if catalog_repository is None:
+        return
+    data = await state.get_data()
+    token = secrets.token_hex(3)
+    page_size = 8
     locations = await asyncio.to_thread(
         catalog_repository.list_locations,
-        city_name=get_settings().catalog_city,
-        query=query,
-        limit=15,
+        city_name=data.get("catalog_city") or get_settings().catalog_city,
+        category_id=data.get("catalog_category_id"),
+        category_query=(None if data.get("catalog_category_id") else data.get("catalog_category_name")),
+        zone_type=data.get("catalog_zone_type"),
+        zone_name=data.get("catalog_zone_name"),
+        limit=page_size + 1,
+        offset=max(0, page) * page_size,
     )
     if not locations:
-        await message.answer("В городском каталоге пока ничего не найдено.")
-        return
-    lines = [f"📚 Каталог · {get_settings().catalog_city}"]
-    for location in locations:
-        categories = ", ".join(location["categories"][:3]) or "без категории"
-        lines.append(
-            f"\n{location['name']}\n{location['address'] or 'адрес не указан'}\n"
-            f"{categories}\nID: {location['id']}"
+        await message.answer(
+            "В выбранной зоне сохранённых заведений не найдено. "
+            "Проверьте название района или выберите весь город."
         )
-    for chunk in split_telegram_text("\n".join(lines)):
-        await message.answer(chunk)
+        return
+    await state.update_data(catalog_token=token, catalog_page=max(0, page))
+    zone = data.get("catalog_zone_name") or "весь город"
+    await message.answer(
+        f"{data.get('catalog_category_name')} · {zone}\nВыберите заведение:",
+        reply_markup=locations_keyboard(
+            locations[:page_size], token, max(0, page), len(locations) > page_size
+        ),
+    )
+
+
+@router.callback_query(F.data.startswith("cp:"))
+async def catalog_page_callback(callback: CallbackQuery, state: FSMContext) -> None:
+    parts = (callback.data or "").split(":")
+    data = await state.get_data()
+    if len(parts) != 3 or parts[1] != data.get("catalog_token"):
+        await callback.answer("Меню устарело. Откройте каталог снова.", show_alert=True)
+        return
+    try:
+        page = max(0, int(parts[2]))
+    except ValueError:
+        page = 0
+    await callback.answer()
+    if callback.message:
+        await show_catalog_page(callback.message, state, page)
+
+
+def normalize_catalog_text(value: str) -> str:
+    return " ".join(value.casefold().replace("ё", "е").split())
+
+
+@router.callback_query(F.data.startswith("cl:"))
+async def catalog_location_callback(callback: CallbackQuery) -> None:
+    if callback.message is None:
+        return
+    await callback.answer()
+    await send_catalog_card(callback.message, callback.from_user.id, (callback.data or "")[3:])
+
+
+async def send_catalog_card(
+    message: Message,
+    owner_user_id: int,
+    location_id: str,
+) -> None:
+    if catalog_repository is None:
+        return
+    location = await asyncio.to_thread(catalog_repository.get_location, location_id)
+    if location is None:
+        await message.answer("Заведение больше не найдено в активном каталоге.")
+        return
+    profile_data = location.get("profile")
+    if profile_data:
+        from app.models import SalonProfile
+
+        profile = SalonProfile.model_validate(profile_data)
+        token = await report_cache.put(owner_user_id, profile, location_id=location_id)
+        rendered = render_section(profile, "main")
+        await message.answer(
+            rendered.text,
+            reply_markup=section_keyboard(
+                token,
+                "main",
+                compare_location_id=location_id,
+            ),
+            disable_web_page_preview=True,
+        )
+        return
+    await message.answer(
+        stored_card_text(location),
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text="📊 Сравнить по данным",
+                        callback_data=f"cmp:{location_id}",
+                    )
+                ]
+            ]
+        ),
+    )
+
+
+@router.callback_query(F.data.startswith("cmp:"))
+async def catalog_compare_callback(callback: CallbackQuery, state: FSMContext) -> None:
+    if catalog_repository is None or callback.message is None:
+        return
+    location_id = (callback.data or "")[4:]
+    location = await asyncio.to_thread(catalog_repository.get_location, location_id)
+    if location is None:
+        await callback.answer("Заведение больше не доступно.", show_alert=True)
+        return
+    city = location["city"]
+    metros = await asyncio.to_thread(catalog_repository.list_zones, city, "metro")
+    await state.update_data(
+        catalog_city=city,
+        compare_location_id=location_id,
+    )
+    await callback.answer()
+    await callback.message.answer(
+        f"С чем сравнить «{location['name']}»? Выберите зону:",
+        reply_markup=comparison_scope_keyboard(
+            location_id,
+            True,
+            bool(metros),
+        ),
+    )
+
+
+@router.callback_query(F.data.startswith("cms:"))
+async def catalog_compare_scope_callback(
+    callback: CallbackQuery,
+    state: FSMContext,
+) -> None:
+    parts = (callback.data or "").split(":", 2)
+    if len(parts) != 3 or parts[1] not in {"city", "district", "metro"}:
+        await callback.answer("Некорректная зона сравнения.", show_alert=True)
+        return
+    scope, location_id = parts[1], parts[2]
+    await state.update_data(compare_location_id=location_id)
+    await callback.answer()
+    if callback.message is None:
+        return
+    if scope == "city":
+        await send_catalog_comparison(callback.message, state, location_id, "city", None)
+        return
+    await show_zone_selection(callback.message, state, scope, action="compare")
+
+
+async def send_catalog_comparison(
+    message: Message,
+    state: FSMContext,
+    location_id: str | None,
+    zone_type: str | None,
+    zone_name: str | None,
+) -> None:
+    if catalog_repository is None or not location_id:
+        await message.answer("Не удалось восстановить выбранное заведение.")
+        return
+    location = await asyncio.to_thread(catalog_repository.get_location, location_id)
+    if location is None:
+        await message.answer("Заведение больше не доступно.")
+        return
+    features = await asyncio.to_thread(
+        catalog_repository.location_features,
+        location["city"],
+    )
+    selected = next((item for item in features if item["id"] == location_id), None)
+    if selected is None:
+        await message.answer("Для выбранного заведения пока недостаточно данных.")
+        return
+    candidates = features
+    if zone_type == "district" and zone_name:
+        normalized = normalize_catalog_text(zone_name)
+        candidates = [
+            item
+            for item in features
+            if normalize_catalog_text(item.get("district") or "") == normalized
+        ]
+    elif zone_type == "metro" and zone_name:
+        normalized = normalize_catalog_text(zone_name)
+        candidates = [
+            item
+            for item in features
+            if normalized
+            in {normalize_catalog_text(value) for value in item.get("metros") or ()}
+        ]
+    scope_label = (
+        "весь город"
+        if zone_type in {None, "city"}
+        else f"{'метро' if zone_type == 'metro' else 'район'} {zone_name}"
+    )
+    report = build_comparison_report(selected, candidates, scope_label)
+    await state.set_state(None)
+    for chunk in split_telegram_text(report):
+        await message.answer(
+            chunk,
+            reply_markup=comparison_back_keyboard(location_id),
+        )
 
 
 @router.message(Command("passport"))
@@ -233,11 +637,15 @@ async def passport_command(message: Message) -> None:
         owner_id = (
             message.from_user.id if message.from_user is not None else message.chat.id
         )
-        token = await report_cache.put(owner_id, profile)
+        token = await report_cache.put(owner_id, profile, location_id=location["id"])
         rendered = render_section(profile, "main")
         await message.answer(
             rendered.text,
-            reply_markup=section_keyboard(token, "main"),
+            reply_markup=section_keyboard(
+                token,
+                "main",
+                compare_location_id=location["id"],
+            ),
             disable_web_page_preview=True,
         )
         return
@@ -393,14 +801,15 @@ async def report_section(callback: CallbackQuery) -> None:
         requested_page = int(parts[3])
     except ValueError:
         requested_page = 0
-    profile = await report_cache.get(token, callback.from_user.id)
-    if profile is None or callback.message is None:
+    view = await report_cache.get_view(token, callback.from_user.id)
+    if view is None or callback.message is None:
         await callback.answer(
             "Отчёт устарел. Повторите поиск заведения.",
             show_alert=True,
         )
         return
     await callback.answer()
+    profile = view.profile
     rendered = render_section(profile, section, requested_page)
     try:
         await callback.message.edit_text(
@@ -410,6 +819,7 @@ async def report_section(callback: CallbackQuery) -> None:
                 section,
                 rendered.page,
                 rendered.total_pages,
+                compare_location_id=view.location_id,
             ),
             disable_web_page_preview=True,
         )

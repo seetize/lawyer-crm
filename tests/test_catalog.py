@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from app.catalog.competitors import compare_locations, compute_competitors
+from app.catalog.comparison import build_comparison_report
 from app.catalog.db import CatalogRepository
 from app.catalog.discovery import DiscoveryError, TwoGisCityDiscovery, YandexCityDiscovery
 from app.catalog.domain import (
@@ -274,7 +275,9 @@ def test_completed_empty_refresh_deactivates_missing_source(
     first_job = write_page(repository, "ногтевая студия", [card("101")])
     repository.finish_job(first_job)
     repository.reconcile_completed_jobs([first_job])
-    assert len(repository.list_locations(city_name="Ярославль")) == 1
+    active = repository.list_locations(city_name="Ярославль")
+    assert len(active) == 1
+    location_id = active[0]["id"]
 
     spec = city_spec()
     city_id = repository.ensure_city(spec)
@@ -296,6 +299,7 @@ def test_completed_empty_refresh_deactivates_missing_source(
     repository.reconcile_completed_jobs([empty_job])
 
     assert repository.list_locations(city_name="Ярославль") == []
+    assert repository.get_location(location_id) is None
 
 
 def test_profile_snapshots_only_change_with_content(
@@ -321,6 +325,109 @@ def test_profile_snapshots_only_change_with_content(
     profile.rating = 4.9
     assert repository.save_profile(location_id, profile) is True
     assert repository.get_location(location_id)["profile"]["rating"] == 4.9
+
+
+def test_catalog_categories_and_zones_filter_saved_locations_without_duplicates(
+    repository: CatalogRepository,
+) -> None:
+    write_page(repository, "салон красоты", [card("101")])
+    write_page(repository, "ногтевая студия", [card("101")])
+    location = repository.list_locations(city_name="Ярославль")[0]
+    profile = SalonProfile(
+        provider="yandex_maps",
+        provider_id="101",
+        name="Студия Лак",
+        district="Кировский район",
+        metro_stations=["Тверская", "Пушкинская"],
+        rating=4.8,
+    )
+    repository.save_profile(location["id"], profile)
+
+    categories = repository.list_categories("Ярославль", "салон красоты")
+    zones = repository.list_zones(
+        "Ярославль", "district", category_id=categories[0]["id"]
+    )
+    results = repository.list_locations(
+        city_name="Ярославль",
+        category_id=categories[0]["id"],
+        zone_type="district",
+        zone_name="  КИРОВСКИЙ   РАЙОН ",
+    )
+
+    assert categories[0]["count"] == 1
+    assert zones == [{"name": "Кировский район", "count": 1}]
+    assert len(results) == 1
+    assert results[0]["metros"] == ["Тверская", "Пушкинская"]
+
+    assert repository.backfill_profile_areas() == 0
+    assert repository.backfill_profile_areas() == 0
+    assert repository.list_zones("Ярославль", "metro") == [
+        {"name": "Пушкинская", "count": 1},
+        {"name": "Тверская", "count": 1},
+    ]
+
+
+def test_reconcile_one_provider_does_not_hide_other_provider_category(
+    repository: CatalogRepository,
+) -> None:
+    yandex_job = write_page(repository, "салон красоты", [card("101")])
+    repository.finish_job(yandex_job)
+    repository.reconcile_completed_jobs([yandex_job])
+    spec = city_spec()
+    city_id = repository.ensure_city(spec)
+    category_id = repository.ensure_category("салон красоты")
+    twogis_job = repository.prepare_job(
+        city_id,
+        category_id,
+        spec.scope,
+        provider="2gis",
+        force=True,
+    )
+    assert repository.claim_job(twogis_job, "test")
+    partition_id, _scope, cursor = repository.pending_partitions(twogis_job)[0]
+    repository.save_page(
+        twogis_job,
+        partition_id,
+        category_id,
+        [],
+        cursor=cursor,
+        next_cursor=None,
+        total_hint=0,
+        raw_hash="empty-2gis",
+    )
+    repository.finish_job(twogis_job)
+    repository.reconcile_completed_jobs([twogis_job])
+
+    categories = repository.list_categories("Ярославль", "салон красоты")
+    assert categories[0]["count"] == 1
+
+
+def test_local_comparison_report_uses_saved_evidence() -> None:
+    selected = {
+        "id": "a",
+        "name": "Студия А",
+        "categories": {"ногтевая студия"},
+        "services": {"маникюр", "педикюр"},
+        "rating": 4.9,
+        "reviews_count": 200,
+        "latitude": 57.62,
+        "longitude": 39.89,
+    }
+    competitor = {
+        "id": "b",
+        "name": "Студия Б",
+        "categories": {"ногтевая студия"},
+        "services": {"маникюр"},
+        "rating": 4.5,
+        "reviews_count": 50,
+        "latitude": 57.621,
+        "longitude": 39.891,
+    }
+
+    report = build_comparison_report(selected, [selected, competitor], "весь город")
+
+    assert "Студия Б" in report
+    assert "Нового парсинга не выполнялось" in report
 
 
 def test_failed_detail_card_is_backed_off_so_queue_can_progress(

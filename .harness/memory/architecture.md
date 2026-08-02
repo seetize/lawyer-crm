@@ -18,3 +18,6 @@
   are complete.
 - Competitor scores are deterministic and token-free. LLM review analysis is
   allowed only after the underlying review content hash changes.
+- Telegram catalogue browsing is DB-only. Districts and metro stations are
+  normalized catalogue areas linked many-to-many with canonical locations;
+  transient Telegram navigation state is never stored in the database.

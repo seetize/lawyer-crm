@@ -69,6 +69,7 @@ class SalonProfile(BaseModel):
     address: str | None = None
     city: str | None = None
     district: str | None = None
+    metro_stations: list[str] = Field(default_factory=list)
     latitude: float | None = None
     longitude: float | None = None
     phones: list[str] = Field(default_factory=list)

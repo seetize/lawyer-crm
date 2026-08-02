@@ -12,9 +12,10 @@ async def test_cache_checks_owner_and_ttl() -> None:
         clock=lambda: now[0],
     )
     profile = SalonProfile(provider="test", provider_id="1", name="Salon")
-    token = await cache.put(42, profile)
+    token = await cache.put(42, profile, location_id="location-1")
 
     assert await cache.get(token, 42) is profile
+    assert (await cache.get_view(token, 42)).location_id == "location-1"
     assert await cache.get(token, 7) is None
 
     now[0] = 111.0

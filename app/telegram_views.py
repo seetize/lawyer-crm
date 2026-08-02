@@ -104,6 +104,7 @@ def section_keyboard(
     active: str,
     page: int = 0,
     total_pages: int = 1,
+    compare_location_id: str | None = None,
 ) -> InlineKeyboardMarkup:
     def button(label: str, section: str) -> InlineKeyboardButton:
         prefix = "• " if active == section else ""
@@ -142,6 +143,15 @@ def section_keyboard(
                 )
             )
         rows.append(navigation)
+    if compare_location_id:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text="📊 Сравнить по данным",
+                    callback_data=f"cmp:{compare_location_id}",
+                )
+            ]
+        )
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 

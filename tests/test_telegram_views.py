@@ -46,7 +46,13 @@ def test_all_reviews_and_replies_are_available_across_pages() -> None:
 
 
 def test_callback_payloads_are_short() -> None:
-    keyboard = section_keyboard("abcdefghijk", "reviews", 2, 10)
+    keyboard = section_keyboard(
+        "abcdefghijk",
+        "reviews",
+        2,
+        10,
+        compare_location_id="12345678-1234-1234-1234-123456789012",
+    )
 
     callbacks = [
         button.callback_data
@@ -57,6 +63,7 @@ def test_callback_payloads_are_short() -> None:
 
     assert callbacks
     assert all(len(value.encode()) <= 64 for value in callbacks)
+    assert any(value.startswith("cmp:") for value in callbacks)
 
 
 def test_new_yandex_sections_are_rendered() -> None:
