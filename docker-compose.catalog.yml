@@ -1,0 +1,20 @@
+services:
+  catalog-db:
+    image: postgis/postgis:17-3.5
+    environment:
+      POSTGRES_DB: beauty_inspector
+      POSTGRES_USER: beauty_inspector
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - catalog_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U beauty_inspector -d beauty_inspector"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+volumes:
+  catalog_postgres_data:

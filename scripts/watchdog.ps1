@@ -10,6 +10,7 @@ if (-not (Test-Path -LiteralPath $python -PathType Leaf)) {
 $statePath = Join-Path $repo ".harness\runs\watchdog-state.json"
 $stdoutPath = Join-Path $repo "bot.stdout.log"
 $stderrPath = Join-Path $repo "bot.stderr.log"
+$heartbeatPath = Join-Path $repo ".harness\runs\bot-heartbeat.json"
 $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
 $mutex = [System.Threading.Mutex]::new($false, "Local\BeautyInspectorBotWatchdog")
 $hasMutex = $false
@@ -48,6 +49,41 @@ function Get-BotProcess {
     })
 }
 
+function Test-BotHeartbeat {
+    if (-not (Test-Path -LiteralPath $heartbeatPath -PathType Leaf)) {
+        return $false
+    }
+    try {
+        $heartbeat = Get-Content -Raw -LiteralPath $heartbeatPath | ConvertFrom-Json
+        $updated = [datetime]::Parse([string]$heartbeat.updated_at).ToUniversalTime()
+        return $updated -gt (Get-Date).ToUniversalTime().AddMinutes(-2)
+    }
+    catch {
+        return $false
+    }
+}
+
+function Stop-BotProcessTree {
+    param([object[]]$Processes)
+    $ids = [System.Collections.Generic.HashSet[int]]::new()
+    foreach ($process in $Processes) {
+        $null = $ids.Add([int]$process.ProcessId)
+    }
+    $allPython = @(Get-CimInstance Win32_Process -Filter "Name = 'python.exe' OR Name = 'pythonw.exe'")
+    $changed = $true
+    while ($changed) {
+        $changed = $false
+        foreach ($process in $allPython) {
+            if ($ids.Contains([int]$process.ParentProcessId) -and $ids.Add([int]$process.ProcessId)) {
+                $changed = $true
+            }
+        }
+    }
+    foreach ($processId in @($ids | Sort-Object -Descending)) {
+        Stop-Process -Id $processId -Force -ErrorAction SilentlyContinue
+    }
+}
+
 function Rotate-Log {
     param([string]$Path)
     for ($index = 3; $index -ge 2; $index--) {
@@ -84,7 +120,7 @@ try {
     }
 
     $processes = @(Get-BotProcess)
-    if ($processes.Count -gt 0) {
+    if ($processes.Count -gt 0 -and (Test-BotHeartbeat)) {
         Save-WatchdogState ([pscustomobject]@{
             restarts = $recent
             circuit_open_until = $null
@@ -92,6 +128,9 @@ try {
             checked_at = $now.ToString("o")
         })
         exit 0
+    }
+    if ($processes.Count -gt 0) {
+        Stop-BotProcessTree -Processes $processes
     }
 
     if (($circuitOpenUntil -and $circuitOpenUntil -gt $now) -or $recent.Count -ge 3) {

@@ -10,6 +10,8 @@ commands:
   live_verify: "powershell -ExecutionPolicy Bypass -File scripts/verify.ps1 -Live"
   recover: "powershell -ExecutionPolicy RemoteSigned -File scripts/recover_harness.ps1"
   watchdog: "powershell -ExecutionPolicy RemoteSigned -File scripts/watchdog.ps1 -Once"
+  catalog_refresh: ".venv/Scripts/python.exe -B scripts/catalog_refresh.py"
+  catalog_migrate: ".venv/Scripts/python.exe -m alembic upgrade head"
 paths:
   source: app
   tests: tests
@@ -27,6 +29,10 @@ risk_paths:
     - app/models.py
     - app/report_cache.py
   R3:
+    - app/catalog
+    - migrations
+    - alembic.ini
+    - docker-compose.catalog.yml
     - .codex
     - .harness
     - scripts/harness.ps1
@@ -41,4 +47,6 @@ test_map:
   app/providers/yclients.py: tests/test_yclients.py
   app/telegram_views.py: tests/test_telegram_views.py
   app/bot.py: tests/test_bot.py
+  app/catalog: tests/test_catalog.py
+  app/api.py: tests/test_catalog_api.py
   app/agents: tests/test_report.py

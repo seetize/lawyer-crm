@@ -1,5 +1,6 @@
 import asyncio
 
+from app.async_runtime import configure_asyncio_policy
 from app.config import Settings
 from app.providers import build_provider
 
@@ -20,4 +21,5 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
+    configure_asyncio_policy()
     asyncio.run(main())

@@ -67,11 +67,19 @@ class SalonProfile(BaseModel):
     primary_provider: str = "unknown"
     name: str
     address: str | None = None
+    city: str | None = None
+    district: str | None = None
+    latitude: float | None = None
+    longitude: float | None = None
+    phones: list[str] = Field(default_factory=list)
     description: str | None = None
     categories: list[str] = Field(default_factory=list)
     awards: list[str] = Field(default_factory=list)
     rating: float | None = None
     reviews_count: int | None = None
+    reviews_collected_count: int = 0
+    reviews_total_count: int | None = None
+    reviews_truncated: bool = False
     ratings: list[SourceRating] = Field(default_factory=list)
     reviews: list[Review] = Field(default_factory=list)
     reviews_summary: str | None = None

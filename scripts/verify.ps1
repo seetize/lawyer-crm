@@ -54,7 +54,7 @@ if ($secretFiles.Count -gt 0) {
 }
 
 Invoke-Gate "imports" {
-    & $python -B -c "import app.bot, app.api, app.service; print('imports_ok')"
+    & $python -B -c "import app.bot, app.api, app.service, app.catalog.db, app.catalog.discovery; print('imports_ok')"
 }
 Invoke-Gate "unit tests" {
     & $python -B -m pytest -p no:cacheprovider -q

@@ -22,8 +22,46 @@ class Settings(BaseSettings):
     data_provider: Literal["demo", "google", "2gis", "yandex", "multi"] = "demo"
     default_language: str = "ru"
     default_city: str = "Астрахань"
+    catalog_database_url: str = "sqlite:///./data/sindy_catalog.db"
+    catalog_city: str = "Ярославль"
+    catalog_country_code: str = "RU"
+    catalog_timezone: str = "Europe/Moscow"
+    catalog_categories: str = "ногтевая студия,салон красоты,студия бровей и ресниц"
+    catalog_bbox: str = "39.70,57.50,40.05,57.75"
+    catalog_yandex_geo_id: str = "16"
+    catalog_max_pages: int = 8
+    catalog_max_partition_depth: int = 2
+    catalog_enrich_batch_size: int = 10
+    catalog_refresh_hours: int = 168
+    catalog_snapshot_limit: int = 3
+    telegram_admin_ids: str = ""
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+    def catalog_category_list(self) -> list[str]:
+        return list(
+            dict.fromkeys(
+                value.strip()
+                for value in self.catalog_categories.split(",")
+                if value.strip()
+            )
+        )
+
+    def catalog_bbox_values(self) -> tuple[float, float, float, float]:
+        values = tuple(float(value.strip()) for value in self.catalog_bbox.split(","))
+        if len(values) != 4:
+            raise ValueError("CATALOG_BBOX must contain west,south,east,north")
+        west, south, east, north = values
+        if not (-180 <= west < east <= 180 and -90 <= south < north <= 90):
+            raise ValueError("CATALOG_BBOX is outside valid coordinate bounds")
+        return west, south, east, north
+
+    def telegram_admin_id_set(self) -> set[int]:
+        return {
+            int(value.strip())
+            for value in self.telegram_admin_ids.split(",")
+            if value.strip().isdigit()
+        }
 
 
 @lru_cache

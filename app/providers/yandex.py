@@ -95,6 +95,54 @@ class YandexMapsProvider(PlaceProvider):
                 self._fetch_search_rankings(item, city),
             )
             profile.reviews = reviews
+            self._set_review_coverage(profile, item)
+            profile.services = services
+            profile.news = news
+            profile.search_rankings = rankings
+            return profile
+
+    async def collect_by_id(self, provider_id: str) -> SalonProfile:
+        """Collect one exact Yandex organization without a name search.
+
+        City enrichment must never select a different similarly named business.
+        """
+        if not provider_id.isdigit():
+            raise ValueError("Yandex provider ID must be numeric")
+        headers = {
+            "User-Agent": self.user_agent,
+            "Accept-Language": "ru-RU,ru;q=0.9",
+            "Accept": "text/html,application/xhtml+xml",
+        }
+        timeout = httpx.Timeout(30, connect=15)
+        async with httpx.AsyncClient(
+            timeout=timeout,
+            follow_redirects=True,
+            headers=headers,
+        ) as client:
+            response = await client.get(f"{self.card_base_url}/{provider_id}/")
+            response.raise_for_status()
+            organizations = self.parse_organizations(response.text)
+            item = next(
+                (
+                    organization
+                    for organization in organizations
+                    if str(organization.get("id")) == provider_id
+                ),
+                None,
+            )
+            if item is None:
+                raise PlaceNotFoundError(
+                    f"Точная карточка Яндекс {provider_id} не найдена"
+                )
+            profile = self.normalize_organization(item)
+            reviews, services, news, rankings = await asyncio.gather(
+                self._fetch_all_reviews(client, item),
+                self._fetch_prices(client, item),
+                self._fetch_news(item),
+                self._fetch_search_rankings(item, profile.city),
+            )
+            profile.reviews = reviews
+            self._set_review_coverage(profile, item)
             profile.services = services
             profile.news = news
             profile.search_rankings = rankings
@@ -115,6 +163,16 @@ class YandexMapsProvider(PlaceProvider):
                     organizations[provider_id] = item
         return list(organizations.values())
 
+    def _set_review_coverage(
+        self,
+        profile: SalonProfile,
+        item: dict[str, Any],
+    ) -> None:
+        total = int((item.get("ratingData") or {}).get("reviewCount") or 0)
+        profile.reviews_collected_count = len(profile.reviews)
+        profile.reviews_total_count = total or None
+        profile.reviews_truncated = total > self.max_review_pages * 50
+
     @classmethod
     def normalize_organization(cls, item: dict[str, Any]) -> SalonProfile:
         provider_id = str(item["id"])
@@ -124,12 +182,43 @@ class YandexMapsProvider(PlaceProvider):
         review_count = rating_data.get("reviewCount")
         booking_url = cls._booking_url(item.get("businessLinks", []))
         description = cls._description(item)
+        coordinates = item.get("coordinates")
+        longitude = latitude = None
+        if (
+            isinstance(coordinates, list)
+            and len(coordinates) >= 2
+            and all(isinstance(value, (int, float)) for value in coordinates[:2])
+        ):
+            longitude, latitude = float(coordinates[0]), float(coordinates[1])
+        region = item.get("region") if isinstance(item.get("region"), dict) else {}
+        region_names = region.get("names") if isinstance(region.get("names"), dict) else {}
+        address_components = item.get("addressComponents") or []
+        district = next(
+            (
+                str(component.get("name"))
+                for component in address_components
+                if isinstance(component, dict)
+                and str(component.get("kind") or "").casefold() in {"district", "area"}
+                and component.get("name")
+            ),
+            None,
+        )
+        phones = [
+            str(phone.get("value") or phone.get("number") or "").strip()
+            for phone in item.get("phones") or []
+            if isinstance(phone, dict) and (phone.get("value") or phone.get("number"))
+        ]
         return SalonProfile(
             provider="yandex_maps",
             provider_id=provider_id,
             primary_provider="yandex_maps",
             name=item.get("title") or item.get("name"),
             address=item.get("fullAddress") or item.get("address"),
+            city=region_names.get("nominative"),
+            district=district,
+            latitude=latitude,
+            longitude=longitude,
+            phones=phones,
             description=description,
             categories=cls._categories(item),
             awards=cls._awards(item),

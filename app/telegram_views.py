@@ -155,6 +155,12 @@ def _review_blocks(profile: SalonProfile) -> list[str]:
             f"Счётчик Яндекс Карт: {profile.reviews_count or 'не указан'}."
         )
     ]
+    if profile.reviews_truncated:
+        blocks.append(
+            "⚠️ Покрытие отзывов ограничено публичным интерфейсом источника: "
+            f"собрано текстов {profile.reviews_collected_count}, "
+            f"счётчик площадки {profile.reviews_total_count or 'не указан'}."
+        )
     for index, review in enumerate(profile.reviews, start=1):
         blocks.extend(_review_parts(index, review))
     return blocks

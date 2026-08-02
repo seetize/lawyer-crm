@@ -178,6 +178,40 @@ REVIEW_SUMMARY_PROVIDER=openai
 python -m pytest -q
 ```
 
+## SINDY city catalogue (pre-integration QA)
+
+The repository now includes a persistent city catalogue used by Telegram and
+the HTTP API before any data is sent to SINDY. Yaroslavl is the pilot city;
+categories, bounds and source budgets are configuration rather than hard-coded
+workflow branches.
+
+Local QA uses SQLite by default. Production-compatible PostgreSQL/PostGIS is
+defined in `docker-compose.catalog.yml`; set `CATALOG_DATABASE_URL` to its
+SQLAlchemy URL before running migrations.
+
+```powershell
+.\.venv\Scripts\python.exe -m alembic upgrade head
+.\.venv\Scripts\python.exe -B scripts\catalog_refresh.py
+powershell -ExecutionPolicy RemoteSigned -File scripts\install_catalog_refresh.ps1
+```
+
+The scheduled refresh runs every six hours, but weekly discovery jobs are
+idempotent. Detail enrichment is bounded, unchanged passport snapshots are not
+written again, and deterministic competitor calculation does not call an LLM.
+Telegram QA commands are `/city_status`, `/catalog`, `/passport` and
+`/competitors`. Mutating commands `/crawl_city` and `/refresh_city` fail closed
+unless the sender is listed in `TELEGRAM_ADMIN_IDS`.
+
+HTTP readiness and catalogue endpoints:
+
+- `GET /health/live` and `GET /health/ready`;
+- `GET /v1/catalog/status`;
+- `GET /v1/locations` and `GET /v1/locations/{id}`;
+- `GET /v1/locations/{id}/competitors`.
+
+No SINDY core writes are enabled yet. That boundary is intentionally gated by
+the acceptance plan in `docs/SINDY_ACCEPTANCE.md`.
+
 Тесты покрывают нормализацию Яндекса, подпись и ответы организаций, объединение
 источников, 2ГИС, публичный AES-GCM контекст YCLIENTS, Telegram-пагинацию и
 владение кэшем отчёта.
