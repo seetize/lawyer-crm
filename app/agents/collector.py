@@ -15,12 +15,19 @@ class CollectorAgent:
         missing_fields: list[str] | None = None,
         previous: SalonProfile | None = None,
     ) -> SalonProfile:
-        # missing_fields — контракт для будущего мульти-источника: он сможет
-        # целенаправленно искать прайс, отзывы или рейтинг при повторной попытке.
-        collected = await self.provider.collect(query, city)
         if previous is None:
-            return collected
-        return self._merge(previous, collected)
+            return await self.provider.collect(query, city)
+        if not missing_fields:
+            return previous
+        targeted = await self.provider.recollect_missing(
+            query,
+            city,
+            missing_fields,
+            previous,
+        )
+        if targeted is None:
+            return previous
+        return self._merge(previous, targeted)
 
     @staticmethod
     def _merge(previous: SalonProfile, current: SalonProfile) -> SalonProfile:

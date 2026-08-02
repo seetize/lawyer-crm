@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "status": {"type": "string", "enum": ["complete", "partial", "blocked"]},
+    "summary": {"type": "string"},
+    "changed_files": {"type": "array", "items": {"type": "string"}},
+    "verification": {"type": "array", "items": {"type": "string"}},
+    "residual_risks": {"type": "array", "items": {"type": "string"}},
+    "memory_updates": {"type": "array", "items": {"type": "string"}}
+  },
+  "required": [
+    "status",
+    "summary",
+    "changed_files",
+    "verification",
+    "residual_risks",
+    "memory_updates"
+  ],
+  "additionalProperties": false
+}

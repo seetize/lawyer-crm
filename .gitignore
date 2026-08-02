@@ -2,6 +2,9 @@
 .venv/
 __pycache__/
 .pytest_cache/
+.harness/runs/*
+!.harness/runs/.gitkeep
+.pytest_cache/
 *.py[cod]
 *.egg-info/
 *.log

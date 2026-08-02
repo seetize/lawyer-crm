@@ -1,0 +1,38 @@
+project: beauty-inspector
+language: python
+python: ">=3.12"
+entrypoints:
+  bot: ".venv/Scripts/python.exe -m app.bot"
+  api: ".venv/Scripts/python.exe -m uvicorn app.api:app"
+commands:
+  targeted_tests: ".venv/Scripts/python.exe -B -m pytest -p no:cacheprovider -q <tests>"
+  verify: "powershell -ExecutionPolicy Bypass -File scripts/verify.ps1"
+  live_verify: "powershell -ExecutionPolicy Bypass -File scripts/verify.ps1 -Live"
+paths:
+  source: app
+  tests: tests
+  runtime_agents: app/agents
+  development_harness: .codex
+protected:
+  - .env
+  - .git
+  - bot.stderr.log
+  - bot.stdout.log
+risk_paths:
+  R2:
+    - app/providers
+    - app/agents
+    - app/models.py
+    - app/report_cache.py
+  R3:
+    - .codex
+    - .harness
+    - scripts/harness.ps1
+    - .env.example
+test_map:
+  app/providers/yandex.py: tests/test_yandex.py
+  app/providers/twogis_web.py: tests/test_twogis_web.py
+  app/providers/yclients.py: tests/test_yclients.py
+  app/telegram_views.py: tests/test_telegram_views.py
+  app/bot.py: tests/test_bot.py
+  app/agents: tests/test_report.py
