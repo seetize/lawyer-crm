@@ -32,7 +32,7 @@ def test_project_harness_contract_is_complete() -> None:
     assert config["approval_policy"] == "never"
     assert config["sandbox_mode"] == "workspace-write"
     assert config["sandbox_workspace_write"]["network_access"] is True
-    assert config["agents"]["max_concurrent_threads_per_session"] <= 3
+    assert config["agents"]["max_concurrent_threads_per_session"] <= 2
 
     schema = json.loads(
         (ROOT / ".codex/schemas/result.schema.json").read_text("utf-8")
@@ -41,24 +41,18 @@ def test_project_harness_contract_is_complete() -> None:
     assert set(schema["required"]) == set(schema["properties"])
 
 
-def test_custom_agents_are_bounded_and_review_is_read_only() -> None:
+def test_only_custom_agent_is_independent_read_only_reviewer() -> None:
     agent_directory = ROOT / ".codex/agents"
     configs = {
         path.stem: tomllib.loads(path.read_text("utf-8"))
         for path in agent_directory.glob("*.toml")
     }
-    assert {
-        "project_explorer",
-        "project_implementer",
-        "project_reviewer",
-        "project_verifier",
-    } <= configs.keys()
+    assert set(configs) == {"project_reviewer"}
     for config in configs.values():
         assert config["name"]
         assert config["description"]
         assert config["developer_instructions"]
     assert configs["project_reviewer"]["sandbox_mode"] == "read-only"
-    assert configs["project_verifier"]["sandbox_mode"] == "read-only"
 
 
 def test_unattended_recovery_keeps_security_boundaries() -> None:
@@ -72,6 +66,8 @@ def test_unattended_recovery_keeps_security_boundaries() -> None:
     assert "task.dpapi" in harness
     assert "--ask-for-approval never" in harness
     assert "--sandbox workspace-write" in harness
+    assert "run targeted checks only" in harness.casefold()
+    assert "wrapper runs the full gate once" in harness.casefold()
     assert "dangerously-bypass" not in combined
     assert "invoke-expression" not in combined
     assert "$recent.count -ge 3" in watchdog.casefold()

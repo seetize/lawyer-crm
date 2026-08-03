@@ -16,7 +16,7 @@ ALLOWED_TRANSITIONS = {
     "running": {"retry_wait", "verifying", "interrupted", "failed"},
     "retry_wait": {"running", "failed"},
     "verifying": {"completed", "retry_wait", "interrupted", "failed"},
-    "interrupted": {"running", "failed"},
+    "interrupted": {"running", "verifying", "failed"},
     "completed": set(),
     "failed": set(),
 }
@@ -44,6 +44,11 @@ ALLOWED_STRATEGIES = {
         "Inspect the preserved worktree and run state after interruption, determine the "
         "last completed action, then continue safely from that checkpoint and verify it."
     ),
+    "finish_incomplete": (
+        "Inspect the prior structured result and preserved work, finish only the "
+        "missing acceptance criteria, run targeted regression checks, and report "
+        "complete only when the task is genuinely complete."
+    ),
     "rebuild_process": (
         "Verify the exact project process identity, then recreate only that process "
         "from the documented project command."
@@ -51,13 +56,24 @@ ALLOWED_STRATEGIES = {
 }
 LABEL_PATTERN = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
 CODE_PATTERN = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
+RESULT_FIELDS = {
+    "status",
+    "summary",
+    "changed_files",
+    "verification",
+    "residual_risks",
+    "memory_updates",
+}
+RESULT_MAX_ITEMS = 100
+RESULT_MAX_SUMMARY_CHARS = 4000
+RESULT_MAX_ITEM_CHARS = 1000
 
 
 def utc_now() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds")
 
 
-def atomic_write_json(path: Path, payload: Any) -> None:
+def atomic_write_json(path: Path, payload: Any, *, keep_backup: bool = True) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary_name = tempfile.mkstemp(
         prefix=f".{path.name}.",
@@ -72,7 +88,9 @@ def atomic_write_json(path: Path, payload: Any) -> None:
             stream.flush()
             os.fsync(stream.fileno())
         backup = path.with_suffix(path.suffix + ".bak")
-        if path.exists():
+        if not keep_backup:
+            backup.unlink(missing_ok=True)
+        if keep_backup and path.exists():
             try:
                 json.loads(path.read_text(encoding="utf-8"))
             except (json.JSONDecodeError, UnicodeError, OSError):
@@ -97,6 +115,38 @@ def load_json(path: Path, default: Any = None) -> Any:
     if errors:
         raise ValueError(f"No valid JSON state for {path}") from errors[-1]
     return default
+
+
+def read_agent_result(path: Path) -> dict[str, Any]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError, UnicodeError, OSError) as error:
+        raise ValueError("Agent result is missing or invalid JSON") from error
+    if not isinstance(payload, dict) or set(payload) != RESULT_FIELDS:
+        raise ValueError("Agent result does not match the bounded result contract")
+    if payload.get("status") not in {"complete", "partial", "blocked"}:
+        raise ValueError("Agent result has an invalid status")
+    if not isinstance(payload.get("summary"), str):
+        raise ValueError("Agent result summary must be text")
+    for field in RESULT_FIELDS - {"status", "summary"}:
+        if not isinstance(payload.get(field), list) or not all(
+            isinstance(item, str) for item in payload[field]
+        ):
+            raise ValueError(f"Agent result field {field} must be a string list")
+    sanitized = {
+        "status": payload["status"],
+        "summary": redact(payload["summary"])[:RESULT_MAX_SUMMARY_CHARS],
+        **{
+            field: [
+                redact(item)[:RESULT_MAX_ITEM_CHARS]
+                for item in payload[field][:RESULT_MAX_ITEMS]
+            ]
+            for field in RESULT_FIELDS - {"status", "summary"}
+        },
+    }
+    if sanitized != payload:
+        atomic_write_json(path, sanitized, keep_backup=False)
+    return sanitized
 
 
 def redact(value: str) -> str:
@@ -306,6 +356,41 @@ def lookup_lesson(
     return None
 
 
+def choose_strategy(root: Path, state: dict[str, Any]) -> dict[str, Any] | None:
+    """Choose one allowlisted recovery strategy without repeating it."""
+    tried = set(state.get("tried_strategy_ids") or [])
+    lesson = lookup_lesson(
+        root,
+        state.get("last_failure_fingerprint"),
+        action=str(state.get("current_action") or "unknown"),
+        scope="repository",
+    )
+    candidates = [
+        lesson["strategy_id"] if lesson else None,
+        "recover_interrupted" if state.get("status") == "interrupted" else None,
+        (
+            "repair_verification"
+            if state.get("last_failure_category") == "verification"
+            else None
+        ),
+        (
+            "finish_incomplete"
+            if state.get("last_failure_category")
+            in {"agent_incomplete", "result_contract"}
+            else None
+        ),
+        "inspect_fix_verify" if int(state.get("attempts") or 0) == 0 else None,
+        "transient_retry",
+    ]
+    for strategy_id in candidates:
+        if strategy_id and strategy_id not in tried:
+            return {
+                "strategy_id": strategy_id,
+                "instruction": ALLOWED_STRATEGIES[strategy_id],
+            }
+    return None
+
+
 def pid_alive(pid: int | None) -> bool:
     if not pid or pid <= 0:
         return False
@@ -314,6 +399,25 @@ def pid_alive(pid: int | None) -> bool:
     except OSError:
         return False
     return True
+
+
+def can_resume_verification(run_directory: Path, state: dict[str, Any]) -> bool:
+    if state.get("status") not in {"verifying", "interrupted"}:
+        return False
+    if "codex" not in set(state.get("completed_actions") or []):
+        return False
+    attempt = int(state.get("attempts") or 0)
+    if attempt < 1:
+        return False
+    try:
+        result = read_agent_result(run_directory / f"result-attempt-{attempt}.json")
+    except ValueError:
+        return False
+    return result["status"] == "complete"
+
+
+def cleanup_terminal_task(run_directory: Path) -> None:
+    (run_directory / "task.dpapi").unlink(missing_ok=True)
 
 
 def recoverable_runs(runs_directory: Path) -> list[str]:
@@ -328,13 +432,22 @@ def recoverable_runs(runs_directory: Path) -> list[str]:
         except ValueError:
             continue
         status = state.get("status")
+        if status in TERMINAL_STATUSES:
+            cleanup_terminal_task(directory)
+            continue
         if status not in ACTIVE_STATUSES:
             continue
         owner_pid = int(state.get("owner_pid") or 0)
         if status in {"running", "verifying"} and pid_alive(owner_pid):
             continue
+        if can_resume_verification(directory, state):
+            if status != "interrupted":
+                transition(directory, "interrupted")
+            result.append(directory.name)
+            continue
         if int(state.get("attempts") or 0) >= int(state.get("max_attempts") or 1):
             transition(directory, "failed")
+            cleanup_terminal_task(directory)
             continue
         if status in {"running", "verifying"}:
             transition(directory, "interrupted")
@@ -370,14 +483,15 @@ def build_parser() -> argparse.ArgumentParser:
     failure.add_argument("--action", required=True)
     failure.add_argument("--code", required=True)
 
-    lookup = subparsers.add_parser("lookup")
-    lookup.add_argument("root", type=Path)
-    lookup.add_argument("fingerprint")
-    lookup.add_argument("--action", required=True)
-    lookup.add_argument("--scope", required=True)
+    strategy = subparsers.add_parser("strategy")
+    strategy.add_argument("root", type=Path)
+    strategy.add_argument("run_directory", type=Path)
 
     recoverable = subparsers.add_parser("recoverable")
     recoverable.add_argument("runs_directory", type=Path)
+
+    result = subparsers.add_parser("result")
+    result.add_argument("path", type=Path)
     return parser
 
 
@@ -405,15 +519,12 @@ def main() -> int:
             action=args.action,
             code=args.code,
         )
-    elif args.command == "lookup":
-        result = lookup_lesson(
-            args.root,
-            args.fingerprint,
-            action=args.action,
-            scope=args.scope,
-        )
+    elif args.command == "strategy":
+        result = choose_strategy(args.root, read_run_state(args.run_directory))
     elif args.command == "recoverable":
         result = recoverable_runs(args.runs_directory)
+    elif args.command == "result":
+        result = read_agent_result(args.path)
     else:
         raise AssertionError(args.command)
     print(json.dumps(result, ensure_ascii=False))

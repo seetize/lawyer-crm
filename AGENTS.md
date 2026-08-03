@@ -10,9 +10,8 @@ Deliver the user's requested outcome autonomously with the smallest reliable
 amount of model and tool work. Correctness, evidence, preservation of user data,
 and explicit limits take priority over apparent speed.
 
-Read `README.md` and `.harness/project.yaml` before changing behavior. Read only
-the source and memory files relevant to the task; do not bulk-load logs or the
-whole repository.
+Read `.harness/project.yaml` before changing behavior. Read only the relevant
+README section, source, tests, and memory; never bulk-load logs or the repository.
 
 ## Mandatory workflow
 
@@ -25,6 +24,8 @@ whole repository.
 5. Implement the smallest coherent change and add a regression test when
    behavior changes.
 6. Run targeted checks first, then `scripts/verify.ps1` once before completion.
+   In unattended `scripts/harness.ps1`, the wrapper owns that full gate; the
+   inner agent runs only targeted checks.
 7. For R2/R3 changes, obtain an independent review of the actual diff. The
    reviewer must not rely on the implementer's self-assessment.
 8. Fix blocking findings once and rerun affected checks. Do not repeat a failed
@@ -46,18 +47,18 @@ whole repository.
   behavior. One writer plus one independent read-only reviewer; targeted tests,
   full verify, and fixture-based edge cases.
 - R3: authentication, secrets, dependencies, external APIs, deployment,
-  destructive operations, or harness security. Read-only exploration may run in
-  parallel; use a deep reviewer and verifier, dependency checks, and at most one
-  scoped live smoke test.
+  destructive operations, or harness security. Use one deep read-only reviewer,
+  deterministic verification, dependency checks, and at most one scoped live
+  smoke test. Add a verifier only for non-mechanical or disputed claims.
 
 Risk is automatically raised by the affected files or behavior and must not be
 downgraded to save tokens. Subagents are not a ritual: use them only when their
-independence materially improves correctness or latency. Current Codex agents
-should prefer `project_explorer`, `project_reviewer`, and `project_verifier`.
+independence materially improves correctness. The persistent custom role is
+`project_reviewer`; the main agent explores/writes and scripts verify mechanics.
 
 ## Resource budget
 
-- Default to one main agent and at most two read-only subagents.
+- Default to one main agent and one read-only reviewer when risk requires it.
 - Use `rg`, targeted files, and targeted tests before the full suite.
 - Never run parallel writers in the shared worktree.
 - Run live network checks only for changed provider contracts or release gates.

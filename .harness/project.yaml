@@ -42,6 +42,10 @@ risk_paths:
     - scripts/install_watchdog.ps1
     - .env.example
 test_map:
+  scripts/harness.ps1: tests/test_harness.py
+  scripts/harness_runtime.py: tests/test_harness_runtime.py
+  scripts/recover_harness.ps1: tests/test_harness.py
+  scripts/watchdog.ps1: tests/test_harness.py
   app/providers/yandex.py: tests/test_yandex.py
   app/providers/twogis_web.py: tests/test_twogis_web.py
   app/providers/yclients.py: tests/test_yclients.py

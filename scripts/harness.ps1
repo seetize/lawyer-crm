@@ -42,7 +42,7 @@ function Get-RunState {
     return (Invoke-Runtime show $Directory)
 }
 
-function Get-VerificationSignature {
+function Get-VerificationEvidence {
     param([object[]]$Lines)
     $gate = "unknown"
     $nodes = [System.Collections.Generic.List[string]]::new()
@@ -59,15 +59,28 @@ function Get-VerificationSignature {
             $null = $classes.Add($match.Value.ToLowerInvariant())
         }
     }
-    $canonical = "gate=$gate;nodes=$([string]::Join(',', ($nodes | Sort-Object -Unique)));classes=$([string]::Join(',', ($classes | Sort-Object)))"
-    $bytes = $utf8NoBom.GetBytes($canonical)
-    $hash = [System.Security.Cryptography.SHA256]::Create()
-    try {
-        return ([System.BitConverter]::ToString($hash.ComputeHash($bytes))).Replace("-", "").ToLowerInvariant()
+    return "gate=$gate;nodes=$([string]::Join(',', ($nodes | Sort-Object -Unique)));classes=$([string]::Join(',', ($classes | Sort-Object)))"
+}
+
+function Register-RunFailure {
+    param(
+        [string]$Directory,
+        [string]$Category,
+        [string]$Message,
+        [string]$Action,
+        [string]$Code
+    )
+    $null = Invoke-Runtime transition $Directory retry_wait
+    $failure = Invoke-Runtime failure $Directory $Category $Message --action $Action --code $Code
+    $state = Get-RunState -Directory $Directory
+    $stop = (
+        [int]$state.failure_counts.($failure.fingerprint) -ge 2 -or
+        [int]$state.attempts -ge [int]$state.max_attempts
+    )
+    if ($stop) {
+        $null = Invoke-Runtime transition $Directory failed
     }
-    finally {
-        $hash.Dispose()
-    }
+    return (-not $stop)
 }
 
 function Protect-Task {
@@ -127,85 +140,92 @@ try {
         if ($state.status -in @("completed", "failed")) {
             break
         }
-        if ([int]$state.attempts -ge [int]$state.max_attempts) {
-            $null = Invoke-Runtime transition $runDirectory failed
-            break
-        }
-
-        $lesson = $null
-        if ($state.last_failure_fingerprint) {
-            $lesson = Invoke-Runtime lookup $repo $state.last_failure_fingerprint --action ([string]$state.current_action) --scope repository
-        }
-        if ($lesson -and $lesson.strategy_id -notin @($state.tried_strategy_ids)) {
-            $strategyId = [string]$lesson.strategy_id
-            $strategyInstruction = [string]$lesson.instruction
-        }
-        elseif ($state.status -eq "interrupted" -and "recover_interrupted" -notin @($state.tried_strategy_ids)) {
-            $strategyId = "recover_interrupted"
-            $strategyInstruction = "Inspect the preserved worktree and run state after interruption, continue from the last safe checkpoint, and verify all resulting work."
-        }
-        elseif ($state.last_failure_category -eq "verification" -and "repair_verification" -notin @($state.tried_strategy_ids)) {
-            $strategyId = "repair_verification"
-            $strategyInstruction = "Inspect the failed verification evidence, repair its root cause without discarding valid work, add regression coverage, and verify again."
-        }
-        elseif ([int]$state.attempts -eq 0) {
-            $strategyId = "inspect_fix_verify"
-            $strategyInstruction = "Inspect the repository, implement the smallest coherent fix, add regression coverage, and verify it."
-        }
-        elseif ("transient_retry" -notin @($state.tried_strategy_ids)) {
-            $strategyId = "transient_retry"
-            $strategyInstruction = "Re-check the runner and current worktree once, preserve completed work, then finish and verify the task without repeating irreversible effects."
-        }
-        else {
-            $null = Invoke-Runtime transition $runDirectory failed
-            break
-        }
-
-        $null = Invoke-Runtime transition $runDirectory running --owner-pid $PID --increment-attempt --strategy-id $strategyId --action codex
-        $state = Get-RunState -Directory $runDirectory
         $attempt = [int]$state.attempts
         $resultPath = Join-Path $runDirectory ("result-attempt-{0}.json" -f $attempt)
-        $prompt = @"
-Execute this repository task through the development harness in AGENTS.md.
-Risk hint: $($state.risk). Classify it yourself if auto; never lower a required tier.
-Recovery strategy: $strategyId. $strategyInstruction
-Preserve valid existing work. Do not repeat a failed strategy without new evidence.
-Run state is in .harness/runs/$runId. The last sanitized failure fingerprint is
-$($state.last_failure_fingerprint). Promote it to .harness/memory/lessons.json only
-after proving a reusable root cause with regression tests, full verification,
-independent review, and commit evidence. Never store executable commands there.
-Complete the work, run the required verification, and return the required structured result.
-User task:
-$Task
-"@
+        $resumeVerification = (
+            $state.status -eq "interrupted" -and
+            "codex" -in @($state.completed_actions) -and
+            (Test-Path -LiteralPath $resultPath -PathType Leaf)
+        )
+        if ($resumeVerification) {
+            try {
+                $resumeResult = Invoke-Runtime result $resultPath
+                $resumeVerification = $resumeResult.status -eq "complete"
+            }
+            catch {
+                $resumeVerification = $false
+            }
+        }
+        if (-not $resumeVerification -and [int]$state.attempts -ge [int]$state.max_attempts) {
+            $null = Invoke-Runtime transition $runDirectory failed
+            break
+        }
 
-        $OutputEncoding = $utf8NoBom
-        $env:PYTHONIOENCODING = "utf-8"
-        $prompt | & $codex.Source `
-            --ask-for-approval never `
-            --sandbox workspace-write `
-            --search `
-            --cd $repo `
-            exec `
-            --strict-config `
-            --ephemeral `
-            --output-schema $schema `
-            --output-last-message $resultPath `
-            -
-        $codexExit = $LASTEXITCODE
-
-        if ($codexExit -ne 0) {
-            $null = Invoke-Runtime transition $runDirectory retry_wait
-            $failure = Invoke-Runtime failure $runDirectory external_runner "Codex runner exited before completing the task" --action codex --code ([string]$codexExit)
-            $state = Get-RunState -Directory $runDirectory
-            if ([int]$state.failure_counts.($failure.fingerprint) -ge 2 -or [int]$state.attempts -ge [int]$state.max_attempts) {
+        if (-not $resumeVerification) {
+            $strategy = Invoke-Runtime strategy $repo $runDirectory
+            if (-not $strategy) {
                 $null = Invoke-Runtime transition $runDirectory failed
                 break
             }
-            continue
+            $strategyId = [string]$strategy.strategy_id
+            $strategyInstruction = [string]$strategy.instruction
+
+            $null = Invoke-Runtime transition $runDirectory running --owner-pid $PID --increment-attempt --strategy-id $strategyId --action codex
+            $state = Get-RunState -Directory $runDirectory
+            $attempt = [int]$state.attempts
+            $resultPath = Join-Path $runDirectory ("result-attempt-{0}.json" -f $attempt)
+            $prompt = @"
+Follow AGENTS.md. Risk: $($state.risk). Strategy: $strategyId — $strategyInstruction
+On recovery inspect .harness/runs/$runId/failures.json. Preserve valid work.
+Run targeted checks only; this wrapper runs the full gate once. Return structured evidence.
+Task:
+$Task
+"@
+
+            $OutputEncoding = $utf8NoBom
+            $env:PYTHONIOENCODING = "utf-8"
+            $prompt | & $codex.Source `
+                --ask-for-approval never `
+                --sandbox workspace-write `
+                --search `
+                --cd $repo `
+                exec `
+                --strict-config `
+                --ephemeral `
+                --output-schema $schema `
+                --output-last-message $resultPath `
+                -
+            $codexExit = $LASTEXITCODE
+
+            if ($codexExit -ne 0) {
+                if (-not (Register-RunFailure $runDirectory external_runner "Codex runner exited before completing the task" codex ([string]$codexExit))) {
+                    break
+                }
+                continue
+            }
+
+            try {
+                $agentResult = Invoke-Runtime result $resultPath
+            }
+            catch {
+                if (-not (Register-RunFailure $runDirectory result_contract "Codex returned an invalid structured result" codex invalid)) {
+                    break
+                }
+                continue
+            }
+            if ($agentResult.status -ne "complete") {
+                $summary = ([string]$agentResult.summary).Replace("`r", " ").Replace("`n", " ")
+                if (-not (Register-RunFailure $runDirectory agent_incomplete "Codex reported $($agentResult.status): $summary" codex ([string]$agentResult.status))) {
+                    break
+                }
+                continue
+            }
+            $null = Invoke-Runtime transition $runDirectory verifying --owner-pid $PID --action verify --complete-action codex
+        }
+        else {
+            $null = Invoke-Runtime transition $runDirectory verifying --owner-pid $PID --action verify
         }
 
-        $null = Invoke-Runtime transition $runDirectory verifying --owner-pid $PID --action verify --complete-action codex
         $verifyExit = 0
         $verifyOutput = @()
         try {
@@ -217,23 +237,24 @@ $Task
             $verifyExit = 1
         }
         if ($verifyExit -eq 0) {
+            $canonicalResult = Join-Path $runDirectory "result.json"
+            Copy-Item -LiteralPath $resultPath -Destination $canonicalResult -Force
+            $null = Invoke-Runtime result $canonicalResult
             $null = Invoke-Runtime transition $runDirectory completed --complete-action verify
-            Copy-Item -LiteralPath $resultPath -Destination (Join-Path $runDirectory "result.json") -Force
             Remove-Item -LiteralPath $taskPath -Force
             break
         }
 
-        $null = Invoke-Runtime transition $runDirectory retry_wait
-        $verifySignature = Get-VerificationSignature -Lines $verifyOutput
-        $failure = Invoke-Runtime failure $runDirectory verification "The repository verification gate failed signature=$verifySignature" --action verify --code ([string]$verifyExit)
-        $state = Get-RunState -Directory $runDirectory
-        if ([int]$state.failure_counts.($failure.fingerprint) -ge 2 -or [int]$state.attempts -ge [int]$state.max_attempts) {
-            $null = Invoke-Runtime transition $runDirectory failed
+        $verifyEvidence = Get-VerificationEvidence -Lines $verifyOutput
+        if (-not (Register-RunFailure $runDirectory verification "Repository verification failed: $verifyEvidence" verify ([string]$verifyExit))) {
             break
         }
     }
 
     $finalState = Get-RunState -Directory $runDirectory
+    if ($finalState.status -eq "failed" -and (Test-Path -LiteralPath $taskPath -PathType Leaf)) {
+        Remove-Item -LiteralPath $taskPath -Force
+    }
     Write-Host "Harness run $runId finished with status $($finalState.status)."
     if ($finalState.status -ne "completed") {
         exit 1

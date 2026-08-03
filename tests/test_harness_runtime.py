@@ -43,6 +43,24 @@ def test_run_state_transitions_and_terminal_state(tmp_path: Path) -> None:
         runtime.transition(run, "running")
 
 
+def test_interrupted_completed_work_can_resume_at_verification(tmp_path: Path) -> None:
+    run = tmp_path / "run"
+    runtime.initialize_run(run, "R3", 2)
+    runtime.transition(
+        run,
+        "running",
+        increment_attempt=True,
+        strategy_id="inspect_fix_verify",
+        action="codex",
+    )
+    runtime.transition(run, "verifying", complete_action="codex")
+    runtime.transition(run, "interrupted")
+
+    resumed = runtime.transition(run, "verifying", action="verify")
+    assert resumed["attempts"] == 1
+    assert resumed["completed_actions"] == ["codex"]
+
+
 def test_atomic_state_uses_valid_backup_if_primary_is_corrupt(tmp_path: Path) -> None:
     run = tmp_path / "run"
     runtime.initialize_run(run, "R2", 2)
@@ -154,22 +172,151 @@ def test_only_exact_validated_allowlisted_lesson_is_returned(tmp_path: Path) -> 
     ) is None
 
 
+def test_strategy_selection_uses_memory_then_changes_approach(tmp_path: Path) -> None:
+    memory = tmp_path / ".harness" / "memory"
+    memory.mkdir(parents=True)
+    (memory / "lessons.json").write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "lessons": [
+                    {
+                        "lesson_id": "known-verification-fix",
+                        "fingerprint": "known",
+                        "status": "validated",
+                        "action": "verify",
+                        "scope": "repository",
+                        "strategy_id": "repair_verification",
+                        "root_cause": "Known deterministic gate mismatch",
+                        "verification": {
+                            "commit": "deadbeef",
+                            "tests": ["test_gate"],
+                            "review": "independent-pass",
+                        },
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    state = {
+        "attempts": 1,
+        "status": "retry_wait",
+        "current_action": "verify",
+        "last_failure_fingerprint": "known",
+        "last_failure_category": "verification",
+        "tried_strategy_ids": ["inspect_fix_verify"],
+    }
+
+    selected = runtime.choose_strategy(tmp_path, state)
+    assert selected == {
+        "strategy_id": "repair_verification",
+        "instruction": runtime.ALLOWED_STRATEGIES["repair_verification"],
+    }
+
+    state["tried_strategy_ids"].append("repair_verification")
+    assert runtime.choose_strategy(tmp_path, state)["strategy_id"] == "transient_retry"
+
+
+def test_agent_result_contract_rejects_incomplete_shapes(tmp_path: Path) -> None:
+    result = tmp_path / "result.json"
+    payload = {
+        "status": "complete",
+        "summary": "done",
+        "changed_files": ["app/example.py"],
+        "verification": ["targeted tests passed"],
+        "residual_risks": [],
+        "memory_updates": [],
+    }
+    result.write_text(json.dumps(payload), encoding="utf-8")
+    assert runtime.read_agent_result(result) == payload
+
+    del payload["verification"]
+    result.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(ValueError, match="bounded result contract"):
+        runtime.read_agent_result(result)
+
+
+def test_agent_result_is_bounded_and_redacted_on_disk(tmp_path: Path) -> None:
+    result = tmp_path / "result.json"
+    secret = "sk-" + "x" * 24
+    payload = {
+        "status": "complete",
+        "summary": f"token={secret} " + "s" * 5000,
+        "changed_files": [f"api_key={secret}"] * 101,
+        "verification": [],
+        "residual_risks": [],
+        "memory_updates": [],
+    }
+    result.write_text(json.dumps(payload), encoding="utf-8")
+
+    sanitized = runtime.read_agent_result(result)
+
+    assert secret not in json.dumps(sanitized)
+    assert len(sanitized["summary"]) == runtime.RESULT_MAX_SUMMARY_CHARS
+    assert len(sanitized["changed_files"]) == runtime.RESULT_MAX_ITEMS
+    assert secret not in result.read_text(encoding="utf-8")
+    assert not result.with_suffix(".json.bak").exists()
+
+
 def test_recovery_interrupts_dead_owner_and_stops_exhausted_run(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     interrupted = tmp_path / "20260802-120000-11111111"
     exhausted = tmp_path / "20260802-120001-22222222"
+    resumable = tmp_path / "20260802-120002-33333333"
     runtime.initialize_run(interrupted, "R3", 2)
     runtime.transition(interrupted, "running", owner_pid=123, increment_attempt=True)
     runtime.initialize_run(exhausted, "R3", 1)
     runtime.transition(exhausted, "running", owner_pid=456, increment_attempt=True)
+    (exhausted / "task.dpapi").write_text("encrypted", encoding="utf-8")
+    runtime.initialize_run(resumable, "R3", 1)
+    runtime.transition(
+        resumable,
+        "running",
+        owner_pid=789,
+        increment_attempt=True,
+        strategy_id="inspect_fix_verify",
+        action="codex",
+    )
+    runtime.transition(resumable, "verifying", complete_action="codex")
+    (resumable / "task.dpapi").write_text("encrypted", encoding="utf-8")
+    (resumable / "result-attempt-1.json").write_text(
+        json.dumps(
+            {
+                "status": "complete",
+                "summary": "done",
+                "changed_files": [],
+                "verification": [],
+                "residual_risks": [],
+                "memory_updates": [],
+            }
+        ),
+        encoding="utf-8",
+    )
     monkeypatch.setattr(runtime, "pid_alive", lambda _pid: False)
 
     recoverable = runtime.recoverable_runs(tmp_path)
 
-    assert recoverable == [interrupted.name]
+    assert recoverable == [interrupted.name, resumable.name]
     assert runtime.load_json(interrupted / "state.json")["status"] == "interrupted"
     assert runtime.load_json(exhausted / "state.json")["status"] == "failed"
+    assert not (exhausted / "task.dpapi").exists()
+    assert runtime.load_json(resumable / "state.json")["status"] == "interrupted"
+    assert (resumable / "task.dpapi").exists()
+    retry_state = runtime.load_json(resumable / "state.json")
+    retry_state["status"] = "retry_wait"
+    assert runtime.can_resume_verification(resumable, retry_state) is False
+
+
+def test_recovery_cleans_task_payload_from_terminal_run(tmp_path: Path) -> None:
+    run = tmp_path / "completed"
+    runtime.initialize_run(run, "R3", 1)
+    runtime.transition(run, "failed")
+    (run / "task.dpapi").write_text("encrypted", encoding="utf-8")
+
+    assert runtime.recoverable_runs(tmp_path) == []
+    assert not (run / "task.dpapi").exists()
 
 
 def test_failure_count_is_persisted_per_fingerprint(tmp_path: Path) -> None:

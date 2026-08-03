@@ -33,8 +33,10 @@ breaker. Install both separate current-user, limited-rights Scheduled Tasks with
 ```
 
 Bot checks stay short; recovery runs separately without a scheduler time limit.
-Recovery is checkpointed and bounded to three attempts. The same failure and
-strategy pair is not repeated. A known workaround becomes executable memory
+Recovery is bounded to the configured attempts (two by default, three maximum).
+A crash during the final gate resumes that gate without another model run. The
+same failure and strategy pair is not repeated. A known workaround becomes
+executable memory
 only after root-cause evidence, a regression test, full verification, an
 independent review, and a commit. This reduces recurrence; it cannot truthfully
 guarantee that all future faults are impossible.
