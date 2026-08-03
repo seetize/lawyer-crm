@@ -52,6 +52,19 @@ def test_catalog_read_api_and_readiness(tmp_path: Path) -> None:
         locations = client.get(
             "/v1/locations", params={"city": "Ярославль", "query": "Лак"}
         )
+        nearby = client.get(
+            "/v1/locations",
+            params={
+                "city": "Ярославль",
+                "center_latitude": 57.62,
+                "center_longitude": 39.89,
+                "radius_km": 1,
+            },
+        )
+        invalid_radius = client.get(
+            "/v1/locations",
+            params={"city": "Ярославль", "radius_km": 2},
+        )
         status = client.get("/v1/catalog/status", params={"city": "Ярославль"})
         location_id = locations.json()[0]["id"]
         passport = client.get(f"/v1/locations/{location_id}")
@@ -62,6 +75,9 @@ def test_catalog_read_api_and_readiness(tmp_path: Path) -> None:
     assert ready.status_code == 200
     assert locations.status_code == 200
     assert len(locations.json()) == 1
+    assert nearby.status_code == 200
+    assert nearby.json()[0]["distance_km"] == 0
+    assert invalid_radius.status_code == 422
     assert status.json()["locations"] == 1
     assert passport.json()["name"] == "Студия Лак"
     assert competitors.json() == []

@@ -19,6 +19,7 @@ from aiogram.types import (
     KeyboardButton,
     Message,
     ReplyKeyboardMarkup,
+    ReplyKeyboardRemove,
 )
 
 from app.config import get_settings
@@ -29,7 +30,7 @@ from app.service import SalonReportService
 from app.review_summary import build_review_summarizer
 from app.telegram_views import SECTIONS, render_section, section_keyboard
 from app.user_input import parse_request
-from app.catalog.db import CatalogRepository
+from app.catalog.db import CatalogRepository, haversine_km
 from app.catalog.runtime import (
     build_catalog_repository,
     build_catalog_service,
@@ -71,6 +72,7 @@ class SearchFlow(StatesGroup):
 class CatalogFlow(StatesGroup):
     waiting_category = State()
     waiting_zone = State()
+    waiting_location = State()
 
 
 def main_keyboard() -> ReplyKeyboardMarkup:
@@ -284,17 +286,28 @@ async def select_catalog_category(
         catalog_city=city,
         catalog_category_id=category["id"],
         catalog_category_name=category["name"],
+        catalog_radius_km=None,
+        catalog_center_latitude=None,
+        catalog_center_longitude=None,
     )
-    metros = await asyncio.to_thread(
-        catalog_repository.list_zones,
-        city,
-        "metro",
-        category_id=category["id"],
+    districts, metros = await asyncio.gather(
+        asyncio.to_thread(
+            catalog_repository.list_zones,
+            city,
+            "district",
+            category_id=category["id"],
+        ),
+        asyncio.to_thread(
+            catalog_repository.list_zones,
+            city,
+            "metro",
+            category_id=category["id"],
+        ),
     )
     await state.set_state(None)
     await message.answer(
         f"{category['name']} · {city}\nВыберите зону поиска:",
-        reply_markup=scope_keyboard(True, bool(metros)),
+        reply_markup=scope_keyboard(bool(districts), bool(metros)),
     )
 
 
@@ -303,15 +316,71 @@ async def catalog_scope_callback(callback: CallbackQuery, state: FSMContext) -> 
     if callback.message is None:
         return
     scope = (callback.data or "").partition(":")[2]
-    if scope not in {"city", "district", "metro"}:
+    if scope not in {"city", "district", "metro", "r1", "r5", "r10"}:
         await callback.answer("Некорректная зона.", show_alert=True)
         return
     await callback.answer()
     if scope == "city":
-        await state.update_data(catalog_zone_type=None, catalog_zone_name=None)
+        await state.update_data(
+            catalog_zone_type=None,
+            catalog_zone_name=None,
+            catalog_radius_km=None,
+            catalog_center_latitude=None,
+            catalog_center_longitude=None,
+        )
         await show_catalog_page(callback.message, state, 0)
         return
+    if scope.startswith("r"):
+        radius = int(scope[1:])
+        await state.update_data(
+            catalog_zone_type="radius",
+            catalog_zone_name=None,
+            catalog_radius_km=radius,
+            catalog_center_latitude=None,
+            catalog_center_longitude=None,
+        )
+        await state.set_state(CatalogFlow.waiting_location)
+        await callback.message.answer(
+            f"Отправьте геопозицию — покажу сохранённые заведения в радиусе {radius} км.",
+            reply_markup=ReplyKeyboardMarkup(
+                keyboard=[
+                    [KeyboardButton(text="📍 Отправить геопозицию", request_location=True)],
+                    [KeyboardButton(text=BACK_BUTTON)],
+                ],
+                resize_keyboard=True,
+                one_time_keyboard=True,
+            ),
+        )
+        return
     await show_zone_selection(callback.message, state, scope, action="browse")
+
+
+@router.message(CatalogFlow.waiting_location, F.location)
+async def catalog_location_radius(message: Message, state: FSMContext) -> None:
+    if message.location is None:
+        return
+    data = await state.get_data()
+    radius = data.get("catalog_radius_km")
+    if radius not in {1, 5, 10}:
+        await state.clear()
+        await message.answer("Радиус поиска устарел. Откройте каталог снова.", reply_markup=main_keyboard())
+        return
+    await state.update_data(
+        catalog_center_latitude=float(message.location.latitude),
+        catalog_center_longitude=float(message.location.longitude),
+    )
+    await state.set_state(None)
+    await message.answer("Геопозиция принята.", reply_markup=ReplyKeyboardRemove())
+    await show_catalog_page(message, state, 0)
+
+
+@router.message(CatalogFlow.waiting_location)
+async def catalog_location_radius_text(message: Message, state: FSMContext) -> None:
+    if (message.text or "") == BACK_BUTTON:
+        await state.clear()
+        await message.answer("Поиск рядом отменён.", reply_markup=main_keyboard())
+        return
+    await message.answer("Нажмите «Отправить геопозицию» или вернитесь назад.")
 
 
 async def show_zone_selection(
@@ -331,6 +400,19 @@ async def show_zone_selection(
         zone_type,
         category_id=data.get("catalog_category_id") if action == "browse" else None,
     )
+    if not zones:
+        await state.set_state(None)
+        if action == "compare":
+            location_id = data.get("compare_location_id")
+            markup = comparison_scope_keyboard(location_id, False, False)
+        else:
+            markup = scope_keyboard(False, False)
+        await message.answer(
+            "Для этой категории районы ещё не подтверждены картами. "
+            "Выберите весь город или точный поиск рядом по геопозиции.",
+            reply_markup=markup,
+        )
+        return
     token = secrets.token_hex(3)
     await state.update_data(
         catalog_token=token,
@@ -389,7 +471,32 @@ async def catalog_zone_text(message: Message, state: FSMContext) -> None:
 async def apply_catalog_zone(message: Message, state: FSMContext, zone_name: str) -> None:
     data = await state.get_data()
     action = data.get("catalog_zone_action", "browse")
-    await state.update_data(catalog_zone_name=zone_name)
+    normalized = normalize_catalog_text(zone_name)
+    canonical_zone = next(
+        (
+            value
+            for value in data.get("catalog_zone_options", [])
+            if normalize_catalog_text(value) == normalized
+        ),
+        None,
+    )
+    if canonical_zone is None:
+        await message.answer(
+            "Такой район не найден среди сохранённых данных карт. "
+            "Выберите доступную кнопку или используйте поиск рядом.",
+            reply_markup=(
+                comparison_scope_keyboard(data.get("compare_location_id"), False, False)
+                if action == "compare"
+                else scope_keyboard(False, False)
+            ),
+        )
+        return
+    await state.update_data(
+        catalog_zone_name=canonical_zone,
+        catalog_radius_km=None,
+        catalog_center_latitude=None,
+        catalog_center_longitude=None,
+    )
     await state.set_state(None)
     if action == "compare":
         await send_catalog_comparison(
@@ -397,7 +504,7 @@ async def apply_catalog_zone(message: Message, state: FSMContext, zone_name: str
             state,
             data.get("compare_location_id"),
             data.get("catalog_zone_type"),
-            zone_name,
+            canonical_zone,
         )
         return
     await show_catalog_page(message, state, 0)
@@ -416,17 +523,30 @@ async def show_catalog_page(message: Message, state: FSMContext, page: int) -> N
         category_query=(None if data.get("catalog_category_id") else data.get("catalog_category_name")),
         zone_type=data.get("catalog_zone_type"),
         zone_name=data.get("catalog_zone_name"),
+        center_latitude=data.get("catalog_center_latitude"),
+        center_longitude=data.get("catalog_center_longitude"),
+        radius_km=data.get("catalog_radius_km"),
         limit=page_size + 1,
         offset=max(0, page) * page_size,
     )
     if not locations:
-        await message.answer(
-            "В выбранной зоне сохранённых заведений не найдено. "
-            "Проверьте название района или выберите весь город."
-        )
+        if data.get("catalog_radius_km"):
+            await message.answer(
+                f"В радиусе {data['catalog_radius_km']} км сохранённых заведений не найдено. "
+                "Попробуйте увеличить радиус."
+            )
+        else:
+            await message.answer(
+                "В выбранной зоне сохранённых заведений не найдено. "
+                "Выберите весь город или поиск рядом."
+            )
         return
     await state.update_data(catalog_token=token, catalog_page=max(0, page))
-    zone = data.get("catalog_zone_name") or "весь город"
+    zone = (
+        f"рядом · {data['catalog_radius_km']} км"
+        if data.get("catalog_radius_km")
+        else data.get("catalog_zone_name") or "весь город"
+    )
     await message.answer(
         f"{data.get('catalog_category_name')} · {zone}\nВыберите заведение:",
         reply_markup=locations_keyboard(
@@ -456,10 +576,11 @@ def normalize_catalog_text(value: str) -> str:
 
 
 @router.callback_query(F.data.startswith("cl:"))
-async def catalog_location_callback(callback: CallbackQuery) -> None:
+async def catalog_location_callback(callback: CallbackQuery, state: FSMContext) -> None:
     if callback.message is None:
         return
     await callback.answer()
+    await state.clear()
     await send_catalog_card(callback.message, callback.from_user.id, (callback.data or "")[3:])
 
 
@@ -516,7 +637,10 @@ async def catalog_compare_callback(callback: CallbackQuery, state: FSMContext) -
         await callback.answer("Заведение больше не доступно.", show_alert=True)
         return
     city = location["city"]
-    metros = await asyncio.to_thread(catalog_repository.list_zones, city, "metro")
+    districts, metros = await asyncio.gather(
+        asyncio.to_thread(catalog_repository.list_zones, city, "district"),
+        asyncio.to_thread(catalog_repository.list_zones, city, "metro"),
+    )
     await state.update_data(
         catalog_city=city,
         compare_location_id=location_id,
@@ -526,7 +650,7 @@ async def catalog_compare_callback(callback: CallbackQuery, state: FSMContext) -
         f"С чем сравнить «{location['name']}»? Выберите зону:",
         reply_markup=comparison_scope_keyboard(
             location_id,
-            True,
+            bool(districts),
             bool(metros),
         ),
     )
@@ -538,7 +662,14 @@ async def catalog_compare_scope_callback(
     state: FSMContext,
 ) -> None:
     parts = (callback.data or "").split(":", 2)
-    if len(parts) != 3 or parts[1] not in {"city", "district", "metro"}:
+    if len(parts) != 3 or parts[1] not in {
+        "city",
+        "district",
+        "metro",
+        "r1",
+        "r5",
+        "r10",
+    }:
         await callback.answer("Некорректная зона сравнения.", show_alert=True)
         return
     scope, location_id = parts[1], parts[2]
@@ -548,6 +679,15 @@ async def catalog_compare_scope_callback(
         return
     if scope == "city":
         await send_catalog_comparison(callback.message, state, location_id, "city", None)
+        return
+    if scope.startswith("r"):
+        await send_catalog_comparison(
+            callback.message,
+            state,
+            location_id,
+            "radius",
+            scope[1:],
+        )
         return
     await show_zone_selection(callback.message, state, scope, action="compare")
 
@@ -590,10 +730,30 @@ async def send_catalog_comparison(
             if normalized
             in {normalize_catalog_text(value) for value in item.get("metros") or ()}
         ]
+    elif zone_type == "radius" and zone_name:
+        radius = int(zone_name)
+        if selected.get("latitude") is None or selected.get("longitude") is None:
+            await message.answer("У выбранного заведения нет координат для сравнения по радиусу.")
+            return
+        candidates = [
+            item
+            for item in features
+            if haversine_km(
+                selected.get("latitude"),
+                selected.get("longitude"),
+                item.get("latitude"),
+                item.get("longitude"),
+            )
+            <= radius
+        ]
     scope_label = (
         "весь город"
         if zone_type in {None, "city"}
-        else f"{'метро' if zone_type == 'metro' else 'район'} {zone_name}"
+        else (
+            f"радиус {zone_name} км"
+            if zone_type == "radius"
+            else f"{'метро' if zone_type == 'metro' else 'район'} {zone_name}"
+        )
     )
     report = build_comparison_report(selected, candidates, scope_label)
     await state.set_state(None)

@@ -146,6 +146,18 @@ class YandexCityDiscovery:
             ]
             website_domain = cls._website_domain(item)
             booking_identity = cls._booking_identity(item)
+            address_components = item.get("addressComponents") or []
+            district = next(
+                (
+                    str(component.get("name")).strip()
+                    for component in address_components
+                    if isinstance(component, dict)
+                    and str(component.get("kind") or "").casefold()
+                    in {"district", "area"}
+                    and component.get("name")
+                ),
+                None,
+            )
             cards.append(
                 DiscoveryCard(
                     provider="yandex_maps",
@@ -158,6 +170,8 @@ class YandexCityDiscovery:
                     website_domain=website_domain,
                     booking_identity=booking_identity,
                     categories=list(dict.fromkeys(categories)),
+                    district=district,
+                    metro_stations=YandexMapsProvider._metro_stations(item),
                     rating=rating_data.get("ratingValue"),
                     reviews_count=rating_data.get("reviewCount"),
                     source_url=f"https://yandex.ru/maps/org/{provider_id}/",

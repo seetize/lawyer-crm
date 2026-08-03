@@ -21,3 +21,9 @@
 - Telegram catalogue browsing is DB-only. Districts and metro stations are
   normalized catalogue areas linked many-to-many with canonical locations;
   transient Telegram navigation state is never stored in the database.
+- District memberships may come from map discovery/profile data or a cached
+  OpenStreetMap boundary assignment. Radius browsing uses ephemeral Telegram
+  coordinates and performs only local catalogue queries.
+- Comparison narratives are generated from saved evidence. Missing ratings,
+  reviews or services remain explicitly unknown and are never converted to
+  zero-valued weaknesses or strengths.

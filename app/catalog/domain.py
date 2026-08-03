@@ -91,6 +91,8 @@ class DiscoveryCard(BaseModel):
     website_domain: str | None = None
     booking_identity: str | None = None
     categories: list[str] = Field(default_factory=list)
+    district: str | None = None
+    metro_stations: list[str] = Field(default_factory=list)
     rating: float | None = None
     reviews_count: int | None = None
     source_url: str | None = None
@@ -126,4 +128,3 @@ class CompetitorMatch(BaseModel):
     score: float
     distance_km: float | None = None
     reasons: list[str] = Field(default_factory=list)
-

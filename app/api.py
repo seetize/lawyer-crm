@@ -61,14 +61,30 @@ async def catalog_status(
 async def catalog_locations(
     city: str | None = None,
     query: str | None = None,
+    center_latitude: float | None = Query(default=None, ge=-90, le=90),
+    center_longitude: float | None = Query(default=None, ge=-180, le=180),
+    radius_km: int | None = Query(default=None),
     limit: int = Query(default=50, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
     repository: CatalogRepository = Depends(get_catalog_repository),
 ) -> list[dict]:
+    radius_values = (center_latitude, center_longitude, radius_km)
+    if any(value is not None for value in radius_values) and (
+        center_latitude is None
+        or center_longitude is None
+        or radius_km not in {1, 5, 10}
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail="Radius search requires center_latitude, center_longitude and radius_km 1, 5 or 10",
+        )
     return await asyncio.to_thread(
         repository.list_locations,
         city_name=city,
         query=query,
+        center_latitude=center_latitude,
+        center_longitude=center_longitude,
+        radius_km=radius_km,
         limit=limit,
         offset=offset,
     )

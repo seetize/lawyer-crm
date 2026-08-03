@@ -192,6 +192,7 @@ SQLAlchemy URL before running migrations.
 ```powershell
 .\.venv\Scripts\python.exe -m alembic upgrade head
 .\.venv\Scripts\python.exe -B scripts\catalog_refresh.py
+.\.venv\Scripts\python.exe -B scripts\catalog_refresh.py --areas-only
 powershell -ExecutionPolicy RemoteSigned -File scripts\install_catalog_refresh.ps1
 ```
 
@@ -203,11 +204,15 @@ Telegram QA commands are `/city_status`, `/catalog`, `/passport` and
 unless the sender is listed in `TELEGRAM_ADMIN_IDS`.
 
 The Telegram catalogue is DB-first: category selection is followed by city,
-district or available metro scope, then deduplicated location buttons and a
-stored passport. Districts and metro stations are durable catalogue entities;
-typed zone names are normalized before lookup. Browsing never calls map
-providers. The `Сравнить` button calculates a grounded, token-free comparison
-from saved categories, coordinates, services, ratings and review counts.
+district, available metro, or a 1/5/10 km radius, then deduplicated location
+buttons and a stored passport. Districts and metro stations are durable
+catalogue entities; typed zone names are normalized and validated before lookup.
+District membership can be refreshed from OpenStreetMap boundaries without
+re-fetching venue cards. Radius browsing uses the Telegram location only for the
+current navigation session. Browsing never calls map providers. The `Сравнить`
+button produces a grounded, token-free narrative from saved categories,
+coordinates, services, ratings, review counts and review summaries; missing
+evidence is reported as unknown instead of being treated as zero.
 
 HTTP readiness and catalogue endpoints:
 

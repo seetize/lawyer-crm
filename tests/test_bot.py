@@ -4,7 +4,12 @@ import json
 import pytest
 
 from app.async_runtime import configure_asyncio_policy
-from app.bot import require_catalog_admin, split_telegram_text, write_bot_heartbeat
+from app.bot import (
+    catalog_location_callback,
+    require_catalog_admin,
+    split_telegram_text,
+    write_bot_heartbeat,
+)
 
 
 def test_windows_async_policy_is_safe_to_configure() -> None:
@@ -57,3 +62,30 @@ async def test_catalog_write_commands_fail_closed_without_admins(monkeypatch) ->
 
     assert await require_catalog_admin(message) is False
     assert "TELEGRAM_ADMIN_IDS" in message.answers[0]
+
+
+@pytest.mark.asyncio
+async def test_opening_catalog_card_clears_ephemeral_location(monkeypatch) -> None:
+    calls: list[tuple] = []
+
+    class FakeCallback:
+        data = "cl:location-id"
+        message = object()
+        from_user = type("User", (), {"id": 123})()
+
+        async def answer(self) -> None:
+            calls.append(("answered",))
+
+    class FakeState:
+        async def clear(self) -> None:
+            calls.append(("cleared",))
+
+    async def fake_send(message, owner_user_id, location_id) -> None:
+        calls.append((message, owner_user_id, location_id))
+
+    monkeypatch.setattr("app.bot.send_catalog_card", fake_send)
+    callback = FakeCallback()
+    await catalog_location_callback(callback, FakeState())
+
+    assert calls[1] == ("cleared",)
+    assert calls[2] == (callback.message, 123, "location-id")

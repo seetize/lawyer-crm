@@ -176,10 +176,14 @@ class CityCatalogService:
                 completed += 1
             except Exception as error:
                 # A failed detail fetch must not invalidate discovery data.
+                status = getattr(getattr(error, "response", None), "status_code", None)
+                code = type(error).__name__
+                if status is not None:
+                    code = f"{code}_{status}"
                 await asyncio.to_thread(
                     self.repository.record_detail_failure,
                     card["provider_id"],
-                    type(error).__name__,
+                    code,
                 )
                 failed += 1
         return {"completed": completed, "failed": failed}

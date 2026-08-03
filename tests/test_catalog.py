@@ -8,6 +8,7 @@ import pytest
 
 from app.catalog.competitors import compare_locations, compute_competitors
 from app.catalog.comparison import build_comparison_report
+from app.catalog.areas import DistrictBoundary, OpenStreetMapDistrictResolver, assign_districts
 from app.catalog.db import CatalogRepository
 from app.catalog.discovery import DiscoveryError, TwoGisCityDiscovery, YandexCityDiscovery
 from app.catalog.domain import (
@@ -99,6 +100,11 @@ def test_discovery_parser_reads_only_explicit_business_items() -> None:
                     "coordinates": [39.89, 57.62],
                     "ratingData": {"ratingValue": 4.8, "reviewCount": 100},
                     "categories": [{"name": "Ногтевая студия"}],
+                    "addressComponents": [
+                        {"kind": "locality", "name": "Ярославль"},
+                        {"kind": "district", "name": "Кировский район"},
+                    ],
+                    "metro": [{"name": "Площадь Ленина"}],
                 },
                 {
                     "type": "business",
@@ -125,6 +131,8 @@ def test_discovery_parser_reads_only_explicit_business_items() -> None:
     assert page.next_cursor is not None
     assert page.next_cursor.skip == 3
     assert page.next_cursor.context == "ctx"
+    assert page.cards[0].district == "Кировский район"
+    assert page.cards[0].metro_stations == ["Площадь Ленина"]
 
 
 def test_yandex_contract_drift_is_not_treated_as_empty_success() -> None:
@@ -367,6 +375,126 @@ def test_catalog_categories_and_zones_filter_saved_locations_without_duplicates(
     ]
 
 
+def test_discovery_areas_are_searchable_before_profile_enrichment(
+    repository: CatalogRepository,
+) -> None:
+    discovered = card("district-card").model_copy(
+        update={
+            "district": "Кировский район",
+            "metro_stations": ["Площадь Ленина"],
+        }
+    )
+    write_page(repository, "салон красоты", [discovered])
+    category = repository.list_categories("Ярославль", "салон красоты")[0]
+
+    assert repository.list_zones(
+        "Ярославль", "district", category_id=category["id"]
+    ) == [{"name": "Кировский район", "count": 1}]
+    assert len(
+        repository.list_locations(
+            city_name="Ярославль",
+            category_id=category["id"],
+            zone_type="district",
+            zone_name="кировский район",
+        )
+    ) == 1
+
+
+def test_radius_search_is_distance_sorted_and_category_scoped(
+    repository: CatalogRepository,
+) -> None:
+    write_page(
+        repository,
+        "салон красоты",
+        [
+            card("center", name="Центр", latitude=57.62),
+            card("near", name="Рядом", latitude=57.624),
+            card("outside", name="Далеко", latitude=57.64),
+        ],
+    )
+    category = repository.list_categories("Ярославль", "салон красоты")[0]
+
+    nearby = repository.list_locations(
+        city_name="Ярославль",
+        category_id=category["id"],
+        center_latitude=57.62,
+        center_longitude=39.89,
+        radius_km=1,
+    )
+
+    assert [item["name"] for item in nearby] == ["Центр", "Рядом"]
+    assert nearby[0]["distance_km"] == 0
+    with pytest.raises(ValueError, match="Radius search requires"):
+        repository.list_locations(
+            city_name="Ярославль",
+            center_latitude=57.62,
+            center_longitude=39.89,
+            radius_km=2,
+        )
+
+
+def test_boundary_districts_are_assigned_from_saved_coordinates(
+    repository: CatalogRepository,
+) -> None:
+    write_page(repository, "салон красоты", [card("inside"), card("outside", longitude=40.0)])
+    locations = repository.coordinate_locations("Ярославль")
+    boundary = DistrictBoundary(
+        name="Кировский район",
+        polygons=(
+            (
+                (39.8, 57.5),
+                (39.95, 57.5),
+                (39.95, 57.7),
+                (39.8, 57.7),
+            ),
+        ),
+    )
+
+    assignments = assign_districts(locations, [boundary])
+    assigned = repository.replace_boundary_districts("Ярославль", assignments)
+
+    assert assigned == 1
+    assert repository.list_zones("Ярославль", "district") == [
+        {"name": "Кировский район", "count": 1}
+    ]
+
+
+def test_yandex_area_evidence_outlives_osm_refresh(repository: CatalogRepository) -> None:
+    discovered = card("area-owner").model_copy(update={"district": "Кировский район"})
+    write_page(repository, "салон красоты", [discovered])
+    location = repository.list_locations(city_name="Ярославль")[0]
+
+    repository.replace_boundary_districts(
+        "Ярославль", {location["id"]: "Кировский район"}
+    )
+    repository.replace_boundary_districts("Ярославль", {})
+
+    assert repository.list_zones("Ярославль", "district") == [
+        {"name": "Кировский район", "count": 1}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_empty_boundary_response_preserves_saved_districts(
+    repository: CatalogRepository,
+) -> None:
+    write_page(repository, "салон красоты", [card("saved-boundary")])
+    location = repository.list_locations(city_name="Ярославль")[0]
+    repository.replace_boundary_districts(
+        "Ярославль", {location["id"]: "Кировский район"}
+    )
+
+    class EmptyResolver(OpenStreetMapDistrictResolver):
+        async def resolve(self, city: CitySpec) -> list[DistrictBoundary]:
+            return []
+
+    with pytest.raises(RuntimeError, match="No validated"):
+        await EmptyResolver().refresh(repository, city_spec())
+    assert repository.list_zones("Ярославль", "district") == [
+        {"name": "Кировский район", "count": 1}
+    ]
+
+
 def test_reconcile_one_provider_does_not_hide_other_provider_category(
     repository: CatalogRepository,
 ) -> None:
@@ -412,6 +540,7 @@ def test_local_comparison_report_uses_saved_evidence() -> None:
         "reviews_count": 200,
         "latitude": 57.62,
         "longitude": 39.89,
+        "review_texts": ["Отличное качество работ и аккуратный мастер"],
     }
     competitor = {
         "id": "b",
@@ -422,12 +551,40 @@ def test_local_comparison_report_uses_saved_evidence() -> None:
         "reviews_count": 50,
         "latitude": 57.621,
         "longitude": 39.891,
+        "review_texts": ["Долго ждала, цена высокая"],
     }
 
     report = build_comparison_report(selected, [selected, competitor], "весь город")
 
     assert "Студия Б" in report
-    assert "Нового парсинга не выполнялось" in report
+    assert "рейтинг ниже на 0.4" in report
+    assert "меньше подтверждений отзывами: 50 против 200" in report
+    assert "в единичных отзывах упоминаются: ожидание, цены" in report
+    assert "новый парсинг при нажатии не запускается" in report
+
+
+def test_comparison_does_not_treat_missing_services_as_zero_strength() -> None:
+    selected = {
+        "id": "a",
+        "name": "Точка",
+        "categories": {"салон красоты"},
+        "services": set(),
+        "rating": 4.8,
+        "reviews_count": 20,
+        "latitude": 57.62,
+        "longitude": 39.89,
+    }
+    competitor = {
+        **selected,
+        "id": "b",
+        "name": "Конкурент",
+        "latitude": 57.621,
+    }
+
+    report = build_comparison_report(selected, [selected, competitor], "радиус 1 км")
+
+    assert "Не оценивалось: ассортимент услуг — нет сопоставимых публичных прайсов" in report
+    assert "ассортимент услуг не уже" not in report
 
 
 def test_failed_detail_card_is_backed_off_so_queue_can_progress(

@@ -2,6 +2,7 @@ from app.catalog.telegram_ui import (
     category_keyboard,
     comparison_scope_keyboard,
     locations_keyboard,
+    scope_keyboard,
     zones_keyboard,
 )
 
@@ -27,3 +28,9 @@ def test_catalog_callback_payloads_fit_telegram_limit() -> None:
     callbacks = [value for markup in markups for value in _callback_values(markup)]
     assert callbacks
     assert all(len(value.encode("utf-8")) <= 64 for value in callbacks)
+    assert {"cs:r1", "cs:r5", "cs:r10"} <= set(
+        _callback_values(scope_keyboard(False, False))
+    )
+    assert f"cms:r10:{location_id}" in _callback_values(
+        comparison_scope_keyboard(location_id, False, False)
+    )

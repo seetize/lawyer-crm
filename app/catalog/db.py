@@ -463,6 +463,7 @@ class CatalogRepository:
             organic_position = partition.result_count
             for card in observed:
                 location, source = self._upsert_card(session, city_id, card)
+                self._replace_discovery_areas(session, location, card)
                 membership_ids = [category_id]
                 for discovered_category in card.categories:
                     key = normalize_text(discovered_category)
@@ -808,9 +809,22 @@ class CatalogRepository:
         category_query: str | None = None,
         zone_type: str | None = None,
         zone_name: str | None = None,
+        center_latitude: float | None = None,
+        center_longitude: float | None = None,
+        radius_km: float | None = None,
         limit: int = 50,
         offset: int = 0,
     ) -> list[dict[str, Any]]:
+        radius_requested = any(
+            value is not None
+            for value in (center_latitude, center_longitude, radius_km)
+        )
+        if radius_requested and (
+            center_latitude is None
+            or center_longitude is None
+            or radius_km not in {1, 5, 10}
+        ):
+            raise ValueError("Radius search requires coordinates and radius 1, 5, or 10 km")
         with Session(self.engine) as session:
             statement = (
                 select(LocationRow, CityRow.name)
@@ -841,6 +855,10 @@ class CatalogRepository:
                     statement = statement.where(
                         CategoryRow.key.like(f"%{normalize_text(category_query)}%")
                     )
+                statement = statement.where(
+                    LocationCategoryRow.active.is_(True),
+                    CategoryRow.active.is_(True),
+                )
             if zone_type and zone_name and zone_type in {"district", "metro"}:
                 statement = statement.join(
                     LocationAreaRow,
@@ -851,6 +869,44 @@ class CatalogRepository:
                     AreaRow.kind == zone_type,
                     AreaRow.normalized_name == normalize_text(zone_name),
                 )
+            if radius_requested:
+                latitude_delta = float(radius_km) / 111.0
+                longitude_scale = max(
+                    0.1,
+                    math.cos(math.radians(float(center_latitude))),
+                )
+                longitude_delta = float(radius_km) / (111.0 * longitude_scale)
+                statement = statement.where(
+                    LocationRow.latitude.between(
+                        float(center_latitude) - latitude_delta,
+                        float(center_latitude) + latitude_delta,
+                    ),
+                    LocationRow.longitude.between(
+                        float(center_longitude) - longitude_delta,
+                        float(center_longitude) + longitude_delta,
+                    ),
+                )
+                rows = session.execute(statement.distinct()).all()
+                nearby = []
+                for row, city in rows:
+                    distance = haversine_km(
+                        center_latitude,
+                        center_longitude,
+                        row.latitude,
+                        row.longitude,
+                    )
+                    if distance <= float(radius_km):
+                        item = self._location_summary(session, row, city)
+                        item["distance_km"] = round(distance, 3)
+                        nearby.append(item)
+                nearby.sort(
+                    key=lambda item: (
+                        item["distance_km"],
+                        normalize_text(item["name"]),
+                        item["id"],
+                    )
+                )
+                return nearby[offset : offset + min(limit, 100)]
             rows = session.execute(
                 statement.distinct()
                 .order_by(LocationRow.canonical_name)
@@ -967,6 +1023,54 @@ class CatalogRepository:
             ]
             return result
 
+    def coordinate_locations(self, city_name: str) -> list[dict[str, Any]]:
+        with Session(self.engine) as session:
+            rows = session.execute(
+                select(
+                    LocationRow.id,
+                    LocationRow.longitude,
+                    LocationRow.latitude,
+                )
+                .join(CityRow, CityRow.id == LocationRow.city_id)
+                .where(
+                    CityRow.normalized_name == normalize_text(city_name),
+                    LocationRow.status == "active",
+                    LocationRow.longitude.is_not(None),
+                    LocationRow.latitude.is_not(None),
+                )
+            ).all()
+            return [
+                {"id": location_id, "longitude": longitude, "latitude": latitude}
+                for location_id, longitude, latitude in rows
+            ]
+
+    def replace_boundary_districts(
+        self,
+        city_name: str,
+        assignments: dict[str, str],
+    ) -> int:
+        updated = 0
+        with Session(self.engine) as session, session.begin():
+            locations = session.scalars(
+                select(LocationRow)
+                .join(CityRow, CityRow.id == LocationRow.city_id)
+                .where(
+                    CityRow.normalized_name == normalize_text(city_name),
+                    LocationRow.status == "active",
+                )
+            ).all()
+            for location in locations:
+                district = assignments.get(location.id)
+                self._replace_areas(
+                    session,
+                    location,
+                    [("district", district)] if district else [],
+                    source="openstreetmap_boundary",
+                )
+                if district:
+                    updated += 1
+        return updated
+
     @staticmethod
     def _location_summary(session: Session, row: LocationRow, city: str) -> dict[str, Any]:
         categories = session.scalars(
@@ -1044,7 +1148,10 @@ class CatalogRepository:
                     ),
                     LocationRow.status == "active",
                 )
-                .order_by(SourceCardRow.first_seen_at)
+                .order_by(
+                    (SourceCardRow.detail_failures == 0).desc(),
+                    SourceCardRow.first_seen_at,
+                )
                 .limit(limit)
             ).all()
             return [
@@ -1228,7 +1335,7 @@ class CatalogRepository:
         location: LocationRow,
         profile: SalonProfile,
     ) -> None:
-        desired = []
+        desired: list[tuple[str, str]] = []
         if profile.district:
             desired.append(("district", profile.district))
         desired.extend(("metro", station) for station in profile.metro_stations)
@@ -1238,16 +1345,70 @@ class CatalogRepository:
         )
         if location.area_hash == area_hash:
             return
+        CatalogRepository._replace_areas(
+            session,
+            location,
+            desired,
+            source="yandex_profile",
+        )
+        location.area_hash = area_hash
+
+    @staticmethod
+    def _replace_discovery_areas(
+        session: Session,
+        location: LocationRow,
+        card: DiscoveryCard,
+    ) -> None:
+        desired: list[tuple[str, str]] = []
+        if card.district:
+            desired.append(("district", card.district))
+        desired.extend(("metro", station) for station in card.metro_stations)
+        desired = list(dict.fromkeys(desired))
+        if not desired:
+            return
+        CatalogRepository._replace_areas(
+            session,
+            location,
+            desired,
+            source=f"{card.provider}_discovery",
+        )
+
+    @staticmethod
+    def _replace_areas(
+        session: Session,
+        location: LocationRow,
+        desired: list[tuple[str, str]],
+        *,
+        source: str,
+    ) -> None:
+        source_priority = _area_source_priority(source)
         existing = session.scalars(
             select(LocationAreaRow).where(
                 LocationAreaRow.location_id == location.id,
-                LocationAreaRow.source == "yandex_profile",
+                LocationAreaRow.source == source,
             )
         ).all()
         for membership in existing:
             membership.active = False
         for priority, (kind, name) in enumerate(desired):
             normalized = normalize_text(name)
+            kind_memberships = session.scalars(
+                select(LocationAreaRow)
+                .join(AreaRow, AreaRow.id == LocationAreaRow.area_id)
+                .where(
+                    LocationAreaRow.location_id == location.id,
+                    LocationAreaRow.active.is_(True),
+                    AreaRow.kind == kind,
+                )
+            ).all()
+            if any(
+                _area_source_priority(membership.source) > source_priority
+                for membership in kind_memberships
+            ):
+                continue
+            for lower in kind_memberships:
+                if _area_source_priority(lower.source) < source_priority:
+                    lower.active = False
             area = session.scalar(
                 select(AreaRow).where(
                     AreaRow.city_id == location.city_id,
@@ -1262,6 +1423,7 @@ class CatalogRepository:
                     kind=kind,
                     name=name,
                     normalized_name=normalized,
+                    source=source,
                 )
                 session.add(area)
                 session.flush()
@@ -1278,14 +1440,20 @@ class CatalogRepository:
                     LocationAreaRow(
                         location_id=location.id,
                         area_id=area.id,
+                        source=source,
                         priority=priority,
                     )
                 )
             else:
+                if (
+                    membership.active
+                    and _area_source_priority(membership.source) > source_priority
+                ):
+                    continue
+                membership.source = source
                 membership.active = True
                 membership.confidence = 1.0
                 membership.priority = priority
-        location.area_hash = area_hash
 
     def location_features(self, city_name: str) -> list[dict[str, Any]]:
         with Session(self.engine) as session:
@@ -1300,7 +1468,11 @@ class CatalogRepository:
                     session.scalars(
                         select(CategoryRow.key)
                         .join(LocationCategoryRow, LocationCategoryRow.category_id == CategoryRow.id)
-                        .where(LocationCategoryRow.location_id == row.id)
+                        .where(
+                            LocationCategoryRow.location_id == row.id,
+                            LocationCategoryRow.active.is_(True),
+                            CategoryRow.active.is_(True),
+                        )
                     ).all()
                 )
                 profile = row.profile_json or {}
@@ -1320,6 +1492,16 @@ class CatalogRepository:
                     for item in profile.get("services") or []
                     if item.get("name")
                 }
+                areas = session.execute(
+                    select(AreaRow.kind, AreaRow.name)
+                    .join(LocationAreaRow, LocationAreaRow.area_id == AreaRow.id)
+                    .where(
+                        LocationAreaRow.location_id == row.id,
+                        LocationAreaRow.active.is_(True),
+                        AreaRow.active.is_(True),
+                    )
+                    .order_by(LocationAreaRow.priority, AreaRow.name)
+                ).all()
                 result.append(
                     {
                         "id": row.id,
@@ -1329,6 +1511,14 @@ class CatalogRepository:
                         "longitude": row.longitude,
                         "categories": categories,
                         "services": service_names,
+                        "reviews_summary": profile.get("reviews_summary"),
+                        "review_texts": [
+                            str(review.get("text") or "")
+                            for review in profile.get("reviews") or []
+                            if isinstance(review, dict) and review.get("text")
+                        ],
+                        "masters": list(profile.get("masters") or ()),
+                        "awards": list(profile.get("awards") or ()),
                         "rating": profile.get("rating") or (
                             primary_source.rating if primary_source else None
                         ),
@@ -1338,30 +1528,14 @@ class CatalogRepository:
                         "district": next(
                             (
                                 name
-                                for kind, name in session.execute(
-                                    select(AreaRow.kind, AreaRow.name)
-                                    .join(LocationAreaRow, LocationAreaRow.area_id == AreaRow.id)
-                                    .where(
-                                        LocationAreaRow.location_id == row.id,
-                                        LocationAreaRow.active.is_(True),
-                                    )
-                                    .order_by(LocationAreaRow.priority, AreaRow.name)
-                                ).all()
+                                for kind, name in areas
                                 if kind == "district"
                             ),
                             None,
                         ),
                         "metros": [
                             name
-                            for kind, name in session.execute(
-                                select(AreaRow.kind, AreaRow.name)
-                                .join(LocationAreaRow, LocationAreaRow.area_id == AreaRow.id)
-                                .where(
-                                    LocationAreaRow.location_id == row.id,
-                                    LocationAreaRow.active.is_(True),
-                                )
-                                .order_by(LocationAreaRow.priority, AreaRow.name)
-                            ).all()
+                            for kind, name in areas
                             if kind == "metro"
                         ],
                     }
@@ -1495,6 +1669,18 @@ def haversine_km(
     delta_lon = math.radians(longitude_b - longitude_a)
     value = math.sin(delta_lat / 2) ** 2 + math.cos(lat_a) * math.cos(lat_b) * math.sin(delta_lon / 2) ** 2
     return radius * 2 * math.atan2(math.sqrt(value), math.sqrt(1 - value))
+
+
+def _area_source_priority(source: str) -> int:
+    if source == "yandex_profile":
+        return 40
+    if source == "yandex_maps_discovery":
+        return 30
+    if source.endswith("_discovery"):
+        return 20
+    if source == "openstreetmap_boundary":
+        return 10
+    return 0
 
 
 def profile_completeness(profile: SalonProfile) -> float:

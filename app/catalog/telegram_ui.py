@@ -22,6 +22,13 @@ def scope_keyboard(has_districts: bool, has_metro: bool) -> InlineKeyboardMarkup
         rows.append([InlineKeyboardButton(text="📍 Район", callback_data="cs:district")])
     if has_metro:
         rows.append([InlineKeyboardButton(text="🚇 Станция метро", callback_data="cs:metro")])
+    rows.append(
+        [
+            InlineKeyboardButton(text="Рядом 1 км", callback_data="cs:r1"),
+            InlineKeyboardButton(text="5 км", callback_data="cs:r5"),
+            InlineKeyboardButton(text="10 км", callback_data="cs:r10"),
+        ]
+    )
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -61,6 +68,9 @@ def locations_keyboard(
     for location in locations:
         rating = location.get("rating")
         suffix = f" · ⭐ {rating:.1f}" if isinstance(rating, (int, float)) else ""
+        distance = location.get("distance_km")
+        if isinstance(distance, (int, float)):
+            suffix += f" · {distance:.1f} км"
         rows.append(
             [
                 InlineKeyboardButton(
@@ -114,6 +124,22 @@ def comparison_scope_keyboard(
                 )
             ]
         )
+    rows.append(
+        [
+            InlineKeyboardButton(
+                text="Рядом 1 км",
+                callback_data=f"cms:r1:{location_id}",
+            ),
+            InlineKeyboardButton(
+                text="5 км",
+                callback_data=f"cms:r5:{location_id}",
+            ),
+            InlineKeyboardButton(
+                text="10 км",
+                callback_data=f"cms:r10:{location_id}",
+            ),
+        ]
+    )
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
