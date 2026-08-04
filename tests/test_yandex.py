@@ -236,3 +236,53 @@ def test_yandex_web_api_signature_is_stable() -> None:
         {"ajax": "1", "csrfToken": "abc:123", "text": "салон красоты"}
     )
     assert cyrillic_signature == "2296987397"
+
+
+def test_real_yandex_feature_shape_and_media_are_normalized() -> None:
+    item = {
+        "features": [
+            {"id": "wifi", "name": "Wi-Fi", "value": True},
+            {
+                "id": "access",
+                "name": "Доступность",
+                "value": [{"id": "full", "name": "доступно"}],
+            },
+        ],
+        "featureGroups": [{"name": "Удобства", "featureIds": ["wifi", "access"]}],
+        "photos": {
+            "items": [
+                {"id": "p1", "urlTemplate": "https://example.test/%s/photo.jpg"}
+            ]
+        },
+    }
+
+    features = YandexMapsProvider._features(item)
+    media = YandexMapsProvider._media(item)
+
+    assert [(value.name, value.value) for value in features] == [
+        ("Wi-Fi", "True"),
+        ("Доступность", "доступно"),
+    ]
+    assert media[0].url == "https://example.test/orig/photo.jpg"
+
+
+def test_story_screens_do_not_become_duplicate_stories() -> None:
+    item = {
+        "lastMileStory": {
+            "storyId": "story-1",
+            "title": "Как пройти",
+            "tags": ["lastMile"],
+            "screens": [
+                {"id": "screen-1", "image": {"urlTemplate": "https://example.test/1.jpg"}},
+                {"id": "screen-2", "image": {"urlTemplate": "https://example.test/2.jpg"}},
+            ],
+        }
+    }
+
+    stories = YandexMapsProvider._stories(item)
+
+    assert len(stories) == 1
+    assert stories[0].media_urls == [
+        "https://example.test/1.jpg",
+        "https://example.test/2.jpg",
+    ]

@@ -220,7 +220,10 @@ Detailed Yandex and 2GIS profiles are archived independently in
 are deduplicated by content hash. Telegram exposes separate news, stories,
 features and branch sections plus a normalized multi-sheet Excel export.
 Network branches are resolved through 2GIS organization IDs, exact-name Yandex
-search and YCLIENTS booking-form companies. Yandex stories are extracted from
+search, matching city-catalogue cards and YCLIENTS booking-form companies.
+Card, story and news media are downloaded to
+`data/media/<provider>/<provider_id>/`; their source URLs and local paths are
+stored in passports and on the `Медиа` Excel sheet. Yandex stories are extracted from
 all embedded card-state payloads. Internal map-rendering flags are excluded
 from user-facing features; full source card payloads remain in the raw archive.
 

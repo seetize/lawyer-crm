@@ -1,6 +1,21 @@
 from app.providers.twogis_web import TwoGisEnrichedProvider
 
 
+def test_card_media_keeps_full_images_and_categories() -> None:
+    html = r'''{
+      "main":"https:\/\/i0.photo.2gis.com\/main\/branch\/28\/700\/common",
+      "review":"https:\/\/cachizer1.2gis.com\/reviews-photos\/a.jpg?w=1920",
+      "thumb":"https:\/\/cachizer1.2gis.com\/reviews-photos\/a.jpg?h=64&w=64",
+      "api":"https:\/\/api.photo.2gis.com\/"
+    }'''
+
+    media = TwoGisEnrichedProvider.parse_media(html)
+
+    assert len(media) == 2
+    assert media[0].category == "Главное фото карточки"
+    assert media[1].category == "Фотографии из отзывов"
+
+
 def test_public_card_parses_prices() -> None:
     html = """
     <article>

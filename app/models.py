@@ -37,6 +37,7 @@ class NewsItem(BaseModel):
     published_at: str | None = None
     photos: list[HttpUrl] = Field(default_factory=list)
     url: HttpUrl | None = None
+    local_photo_paths: list[str] = Field(default_factory=list)
 
 
 class StoryItem(BaseModel):
@@ -46,6 +47,17 @@ class StoryItem(BaseModel):
     category: str | None = None
     media_urls: list[str] = Field(default_factory=list)
     url: str | None = None
+    position: int = 0
+    local_media_paths: list[str] = Field(default_factory=list)
+
+
+class MediaItem(BaseModel):
+    provider_media_id: str
+    media_type: str = "photo"
+    url: str
+    local_path: str | None = None
+    category: str | None = None
+    alt: str | None = None
     position: int = 0
 
 
@@ -122,6 +134,7 @@ class SalonProfile(BaseModel):
     stories: list[StoryItem] = Field(default_factory=list)
     features: list[FeatureItem] = Field(default_factory=list)
     branches: list[BranchRef] = Field(default_factory=list)
+    media: list[MediaItem] = Field(default_factory=list)
     search_rankings: list[SearchRanking] = Field(default_factory=list)
     available_slots: list[str] = Field(default_factory=list)
     booking_url: HttpUrl | None = None

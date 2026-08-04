@@ -11,6 +11,7 @@ from app.catalog.db import CatalogRepository
 from app.catalog.discovery import DiscoveryError, YandexCityDiscovery
 from app.catalog.domain import CitySpec, CrawlSummary, DiscoveryCursor, JobStatus
 from app.catalog.source_archive import SourceArchive
+from app.catalog.media_store import MediaStore
 from app.providers.composite import CompositePlaceProvider
 from app.providers.yandex import YandexMapsProvider
 
@@ -29,6 +30,7 @@ class CityCatalogService:
         max_partition_depth: int = 2,
         refresh_hours: int = 168,
         source_archive: SourceArchive | None = None,
+        media_store: MediaStore | None = None,
     ) -> None:
         self.repository = repository
         self.discovery = discovery
@@ -38,6 +40,7 @@ class CityCatalogService:
         self.refresh_hours = max(1, refresh_hours)
         self.provider = getattr(discovery, "provider", "yandex_maps")
         self.source_archive = source_archive or SourceArchive()
+        self.media_store = media_store or MediaStore()
 
     async def crawl_city(
         self,
@@ -174,6 +177,22 @@ class CityCatalogService:
                 profile = await self.detail_provider.collect_by_id(
                     card["provider_id"]
                 )
+                catalog_branches = await asyncio.to_thread(
+                    self.repository.sibling_branches,
+                    card["location_id"],
+                    self.provider,
+                )
+                known_branches = {
+                    branch.provider_id: branch for branch in profile.branches
+                }
+                known_branches.update(
+                    {
+                        branch.provider_id: branch
+                        for branch in catalog_branches
+                    }
+                )
+                profile.branches = list(known_branches.values())
+                await self.media_store.download_profile(profile)
                 await asyncio.to_thread(self.source_archive.save, profile)
                 if self.provider == "2gis":
                     existing = await asyncio.to_thread(

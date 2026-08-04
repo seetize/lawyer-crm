@@ -14,6 +14,7 @@ from curl_cffi.requests import AsyncSession, RequestsError
 from app.models import (
     BranchRef,
     FeatureItem,
+    MediaItem,
     NewsItem,
     OrganizationReply,
     Review,
@@ -25,6 +26,7 @@ from app.models import (
     StoryItem,
 )
 from app.providers.base import PlaceNotFoundError, PlaceProvider
+from app.curl_runtime import curl_ca_bundle
 
 
 class YandexMapsProvider(PlaceProvider):
@@ -70,40 +72,39 @@ class YandexMapsProvider(PlaceProvider):
             "Accept-Language": "ru-RU,ru;q=0.9",
             "Accept": "text/html,application/xhtml+xml",
         }
+        html = await self._browser_html(
+            self.search_url,
+            {"text": " ".join(part for part in (query, city) if part)},
+        )
+        organizations = self.parse_organizations(html)
+        if not organizations:
+            raise PlaceNotFoundError(
+                f"Заведение не найдено в Яндекс Картах: {query}, {city or ''}"
+            )
+        item = max(
+            organizations,
+            key=lambda candidate: self._match_score(query, candidate),
+        )
+        profile = self.normalize_organization(item)
         timeout = httpx.Timeout(30, connect=15)
         async with httpx.AsyncClient(
             timeout=timeout,
             follow_redirects=True,
             headers=headers,
         ) as client:
-            response = await client.get(
-                self.search_url,
-                params={"text": " ".join(part for part in (query, city) if part)},
-            )
-            response.raise_for_status()
-            organizations = self.parse_organizations(response.text)
-            if not organizations:
-                raise PlaceNotFoundError(
-                    f"Заведение не найдено в Яндекс Картах: {query}, {city or ''}"
-                )
-            item = max(
-                organizations,
-                key=lambda candidate: self._match_score(query, candidate),
-            )
-            profile = self.normalize_organization(item)
             reviews, services, news, rankings, branches = await asyncio.gather(
                 self._fetch_all_reviews(client, item),
                 self._fetch_prices(client, item),
                 self._fetch_news(item),
                 self._fetch_search_rankings(item, city),
-                self._fetch_branches(client, item, city),
+                self._fetch_branches(item, city),
             )
             profile.reviews = reviews
             self._set_review_coverage(profile, item)
             profile.services = services
             profile.news = news
             profile.stories = self._merge_stories(
-                profile.stories, self.parse_stories_html(response.text)
+                profile.stories, self.parse_stories_html(html)
             )
             profile.branches = branches or profile.branches
             profile.search_rankings = rankings
@@ -121,45 +122,60 @@ class YandexMapsProvider(PlaceProvider):
             "Accept-Language": "ru-RU,ru;q=0.9",
             "Accept": "text/html,application/xhtml+xml",
         }
+        html = await self._browser_html(f"{self.card_base_url}/{provider_id}/")
+        organizations = self.parse_organizations(html)
+        item = next(
+            (
+                organization
+                for organization in organizations
+                if str(organization.get("id")) == provider_id
+            ),
+            None,
+        )
+        if item is None:
+            raise PlaceNotFoundError(
+                f"Точная карточка Яндекс {provider_id} не найдена"
+            )
+        profile = self.normalize_organization(item)
         timeout = httpx.Timeout(30, connect=15)
         async with httpx.AsyncClient(
             timeout=timeout,
             follow_redirects=True,
             headers=headers,
         ) as client:
-            response = await client.get(f"{self.card_base_url}/{provider_id}/")
-            response.raise_for_status()
-            organizations = self.parse_organizations(response.text)
-            item = next(
-                (
-                    organization
-                    for organization in organizations
-                    if str(organization.get("id")) == provider_id
-                ),
-                None,
-            )
-            if item is None:
-                raise PlaceNotFoundError(
-                    f"Точная карточка Яндекс {provider_id} не найдена"
-                )
-            profile = self.normalize_organization(item)
             reviews, services, news, rankings, branches = await asyncio.gather(
                 self._fetch_all_reviews(client, item),
                 self._fetch_prices(client, item),
                 self._fetch_news(item),
                 self._fetch_search_rankings(item, profile.city),
-                self._fetch_branches(client, item, profile.city),
+                self._fetch_branches(item, profile.city),
             )
             profile.reviews = reviews
             self._set_review_coverage(profile, item)
             profile.services = services
             profile.news = news
             profile.stories = self._merge_stories(
-                profile.stories, self.parse_stories_html(response.text)
+                profile.stories, self.parse_stories_html(html)
             )
             profile.branches = branches or profile.branches
             profile.search_rankings = rankings
             return profile
+
+    async def _browser_html(
+        self, url: str, params: dict[str, str] | None = None
+    ) -> str:
+        async with AsyncSession(
+            impersonate="chrome",
+            timeout=30,
+            verify=curl_ca_bundle(),
+            headers={
+                "User-Agent": self.user_agent,
+                "Accept-Language": "ru-RU,ru;q=0.9",
+            },
+        ) as session:
+            response = await session.get(url, params=params)
+            response.raise_for_status()
+            return response.text
 
     @classmethod
     def parse_organizations(cls, html: str) -> list[dict[str, Any]]:
@@ -254,6 +270,7 @@ class YandexMapsProvider(PlaceProvider):
             features=cls._features(item),
             stories=cls._stories(item),
             branches=cls._branches(item),
+            media=cls._media(item),
             sources=[
                 SourceRef(
                     provider="yandex_maps",
@@ -267,6 +284,11 @@ class YandexMapsProvider(PlaceProvider):
     @staticmethod
     def _features(item: dict[str, Any]) -> list[FeatureItem]:
         result: list[FeatureItem] = []
+        features_by_id = {
+            str(feature.get("id")): feature
+            for feature in item.get("features") or []
+            if isinstance(feature, dict) and feature.get("id")
+        }
         groups = item.get("featureGroups") or item.get("feature_groups") or []
         if isinstance(groups, dict):
             groups = [groups]
@@ -274,14 +296,47 @@ class YandexMapsProvider(PlaceProvider):
             if not isinstance(group, dict):
                 continue
             category = str(group.get("name") or group.get("title") or "").strip() or None
-            for feature in group.get("features") or group.get("items") or []:
+            raw_features = group.get("features") or group.get("items") or [
+                features_by_id[feature_id]
+                for feature_id in group.get("featureIds") or []
+                if str(feature_id) in features_by_id
+            ]
+            for feature in raw_features:
                 if not isinstance(feature, dict):
                     continue
-                name = str(feature.get("name") or feature.get("title") or "").strip()
+                name = str(feature.get("name") or feature.get("title") or feature.get("id") or "").strip()
                 value = feature.get("valueName", feature.get("value"))
+                if isinstance(value, list):
+                    value = ", ".join(
+                        str(option.get("name") or option.get("value") or option)
+                        for option in value
+                    )
                 if name:
                     result.append(FeatureItem(name=name, value=str(value) if value is not None else None, category=category, provider="yandex_maps"))
         return list({(x.category, x.name, x.value): x for x in result}.values())
+
+    @staticmethod
+    def _media(item: dict[str, Any]) -> list[MediaItem]:
+        photos = item.get("photos") if isinstance(item.get("photos"), dict) else {}
+        result: list[MediaItem] = []
+        for position, raw in enumerate(photos.get("items") or []):
+            if not isinstance(raw, dict):
+                continue
+            template = str(raw.get("urlTemplate") or raw.get("url") or "")
+            if not template.startswith("http"):
+                continue
+            url = template.replace("%s", "orig")
+            result.append(
+                MediaItem(
+                    provider_media_id=url.rsplit("/", 2)[-2],
+                    media_type="photo",
+                    url=url,
+                    alt=raw.get("alt"),
+                    category="Фотографии карточки",
+                    position=position,
+                )
+            )
+        return result
 
     @classmethod
     def _stories(cls, item: dict[str, Any]) -> list[StoryItem]:
@@ -296,12 +351,18 @@ class YandexMapsProvider(PlaceProvider):
                 return
             if not isinstance(value, dict):
                 return
-            local_category = str(value.get("categoryName") or value.get("category") or category or "").strip() or None
+            tags = value.get("tags") if isinstance(value.get("tags"), list) else []
+            local_category = str(value.get("categoryName") or value.get("category") or (tags[0] if tags else category) or "").strip() or None
             identifier = value.get("storyId") or (value.get("id") if inside else None)
             media = cls._story_media(value)
             title = value.get("title") or value.get("name")
             text = value.get("text") or value.get("description")
-            if identifier is not None and (media or title or text):
+            is_story = bool(
+                value.get("storyId")
+                or value.get("screens")
+                or ((title or text) and str(value.get("type") or "") not in {"photo", "video"})
+            )
+            if identifier is not None and is_story and (media or title or text):
                 result.append(StoryItem(provider_story_id=str(identifier), title=title, text=text, category=local_category, media_urls=media, url=value.get("shareUrl") or value.get("targetUrl"), position=position))
                 position += 1
             for key, child in value.items():
@@ -348,7 +409,6 @@ class YandexMapsProvider(PlaceProvider):
 
     async def _fetch_branches(
         self,
-        client: httpx.AsyncClient,
         item: dict[str, Any],
         city: str | None,
     ) -> list[BranchRef]:
@@ -356,16 +416,15 @@ class YandexMapsProvider(PlaceProvider):
         if not name:
             return []
         try:
-            response = await client.get(
+            html = await self._browser_html(
                 self.search_url,
                 params={"text": " ".join(part for part in (name, city) if part)},
             )
-            response.raise_for_status()
-        except httpx.HTTPError:
+        except (RequestsError, ValueError):
             return []
         expected = self._normalized_name(name)
         branches: list[BranchRef] = []
-        for candidate in self.parse_organizations(response.text):
+        for candidate in self.parse_organizations(html):
             candidate_name = str(candidate.get("title") or candidate.get("name") or "")
             if self._normalized_name(candidate_name) != expected:
                 continue
@@ -418,6 +477,7 @@ class YandexMapsProvider(PlaceProvider):
                 impersonate="chrome",
                 headers={"Referer": referer, "X-Retpath-Y": referer},
                 timeout=30,
+                verify=curl_ca_bundle(),
             ) as session:
                 while offset < count:
                     payload, csrf_token = await self._signed_api_get(
@@ -577,6 +637,7 @@ class YandexMapsProvider(PlaceProvider):
                 impersonate="chrome",
                 headers={"Referer": referer, "X-Retpath-Y": referer},
                 timeout=30,
+                verify=curl_ca_bundle(),
             ) as session:
                 for page in range(self.ranking_max_pages):
                     page_params = dict(params)
@@ -705,6 +766,7 @@ class YandexMapsProvider(PlaceProvider):
                 headers=headers,
                 timeout=30,
                 max_clients=self.review_concurrency,
+                verify=curl_ca_bundle(),
             )
             bootstrap = await browser_client.get(api_url, params=base_params)
             if bootstrap.status_code in {403, 429}:
@@ -934,6 +996,7 @@ class YandexMapsProvider(PlaceProvider):
             async with AsyncSession(
                 impersonate="chrome",
                 timeout=30,
+                verify=curl_ca_bundle(),
             ) as browser_client:
                 response = await browser_client.get(
                     f"https://yandex.ru/maps/org/{slug}/{provider_id}/prices/"

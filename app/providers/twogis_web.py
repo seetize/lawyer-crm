@@ -1,10 +1,12 @@
+import asyncio
 import re
+import html as html_lib
 from typing import Any
 
 import httpx
 from bs4 import BeautifulSoup
 
-from app.models import OrganizationReply, Review, SalonProfile, Service
+from app.models import MediaItem, OrganizationReply, Review, SalonProfile, Service
 from app.providers.base import PlaceProvider
 from app.providers.twogis import TwoGisPlaceProvider
 
@@ -33,8 +35,12 @@ class TwoGisEnrichedProvider(PlaceProvider):
                 follow_redirects=True,
                 headers=headers,
             ) as client:
-                prices_response = await client.get(f"{base_url}/tab/prices")
-                reviews_response = await client.get(f"{base_url}/tab/reviews")
+                card_response, prices_response, reviews_response = await asyncio.gather(
+                    client.get(base_url),
+                    client.get(f"{base_url}/tab/prices"),
+                    client.get(f"{base_url}/tab/reviews"),
+                )
+                card_response.raise_for_status()
                 prices_response.raise_for_status()
                 reviews_response.raise_for_status()
                 api_reviews = await self.fetch_all_reviews(
@@ -50,6 +56,7 @@ class TwoGisEnrichedProvider(PlaceProvider):
             profile.reviews = api_reviews or self.parse_reviews(
                 reviews_response.text
             )
+            profile.media = self.parse_media(card_response.text)
             profile.map_url = str(reviews_response.url).removesuffix("/tab/reviews")
             if profile.sources:
                 profile.sources[0].url = profile.map_url
@@ -57,6 +64,49 @@ class TwoGisEnrichedProvider(PlaceProvider):
             # API data remains useful when the public card is temporarily unavailable.
             pass
         return SalonProfile.model_validate(profile.__dict__)
+
+    @staticmethod
+    def parse_media(html: str) -> list[MediaItem]:
+        decoded = html_lib.unescape(html).replace("\\/", "/")
+        urls = re.findall(r'https?://[^"\'\\\s<>]+', decoded)
+        result: list[MediaItem] = []
+        seen: set[str] = set()
+        for raw in urls:
+            url = raw.rstrip(")],;.")
+            normalized = url.casefold()
+            if not any(domain in normalized for domain in ("photo.2gis.com", "cachizer", "ams2-cdn.2gis.com")):
+                continue
+            if normalized.rstrip("/").endswith("api.photo.2gis.com"):
+                continue
+            if "{" in url or url.endswith("/ru/"):
+                continue
+            if any(marker in normalized for marker in ("_320x", "_640x", "_64x64", "48x48", "/320x", "/640x", "h=64&", "w=64&")):
+                continue
+            if "/images/profile/" in normalized and "_1920x." not in normalized:
+                continue
+            media_type = "video" if ".mp4" in normalized else "photo"
+            key = url.split("?w=", 1)[0]
+            if key in seen:
+                continue
+            seen.add(key)
+            if "/main/branch/" in normalized:
+                category = "Главное фото карточки"
+            elif "/reviews-photos/" in normalized:
+                category = "Фотографии из отзывов"
+            elif "/images/profile/" in normalized:
+                category = "Фотографии авторов отзывов"
+            else:
+                category = "Медиа карточки 2ГИС"
+            result.append(
+                MediaItem(
+                    provider_media_id=str(len(result) + 1),
+                    media_type=media_type,
+                    url=url,
+                    category=category,
+                    position=len(result),
+                )
+            )
+        return result[:200]
 
     @staticmethod
     def parse_services(

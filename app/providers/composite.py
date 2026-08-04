@@ -70,6 +70,12 @@ class CompositePlaceProvider(PlaceProvider):
             base.reviews,
             extra.reviews,
         )
+        data["media"] = list(
+            {
+                (item.url, item.media_type): item
+                for item in [*base.media, *extra.media]
+            }.values()
+        )
         # Yandex is the primary card and its category topology must stay exact.
         # Other map providers are a fallback only when Yandex has no public menu.
         data["services"] = base.services or extra.services

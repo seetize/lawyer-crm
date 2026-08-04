@@ -17,6 +17,7 @@ SECTIONS = (
     "stories",
     "features",
     "branches",
+    "media",
     "rankings",
 )
 
@@ -51,6 +52,8 @@ def render_section(
         return _page(_feature_blocks(profile), page)
     if section == "branches":
         return _page(_branch_blocks(profile), page)
+    if section == "media":
+        return _page(_media_blocks(profile), page)
     if section == "rankings":
         return RenderedSection(render_rankings(profile))
     return RenderedSection(render_main(profile))
@@ -128,11 +131,12 @@ def section_keyboard(
         [button("🕒 График", "hours"), button("📰 Новости", "news")],
         [button("📖 Истории", "stories"), button("✨ Особенности", "features")],
         [button("🏢 Филиалы", "branches")],
+        [button("📷 Фото и видео", "media")],
         [button("✂️ Услуги и цены", "services")],
         [button("👤 Мастера", "masters"), button("🔎 Место в поиске", "rankings")],
     ]
     if total_pages > 1 and active in {
-        "reviews", "services", "news", "stories", "features", "branches"
+        "reviews", "services", "news", "stories", "features", "branches", "media"
     }:
         navigation: list[InlineKeyboardButton] = []
         if page > 0:
@@ -291,6 +295,19 @@ def _branch_blocks(profile: SalonProfile) -> list[str]:
     blocks = [f"🏢 Филиалы сети · {len(profile.branches)}"]
     for index, branch in enumerate(sorted(profile.branches, key=lambda item: item.position), 1):
         blocks.append(f"{index}. {branch.name}\n{branch.address or NOT_PUBLIC}" + (f"\n{branch.url}" if branch.url else ""))
+    return blocks
+
+
+def _media_blocks(profile: SalonProfile) -> list[str]:
+    if not profile.media:
+        return [f"📷 Фото и видео\n\n{NOT_PUBLIC}"]
+    blocks = [f"📷 Фото и видео карточки · {len(profile.media)}"]
+    for index, item in enumerate(profile.media, 1):
+        blocks.append(
+            f"{index}. {item.media_type} · {item.category or 'Без категории'}\n"
+            f"{item.url}"
+            + (f"\nСохранено: {item.local_path}" if item.local_path else "")
+        )
     return blocks
 
 

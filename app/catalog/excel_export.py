@@ -36,6 +36,7 @@ def _sheets(profile: SalonProfile) -> dict[str, list[list[Any]]]:
         "Особенности": [["Категория", "Особенность", "Значение", "Источник"], *[[x.category, x.name, x.value, x.provider] for x in profile.features]],
         "Новости": [["ID", "Дата", "Текст", "Фото", "URL"], *[[x.provider_news_id, x.published_at, x.text, "\n".join(map(str, x.photos)), str(x.url or "")] for x in profile.news]],
         "Истории": [["Порядок", "Категория", "ID", "Заголовок", "Текст", "Медиа", "URL"], *[[x.position + 1, x.category, x.provider_story_id, x.title, x.text, "\n".join(x.media_urls), x.url] for x in profile.stories]],
+        "Медиа": [["Порядок", "Тип", "Категория", "ID", "Исходный URL", "Локальный файл", "Описание"], *[[x.position + 1, x.media_type, x.category, x.provider_media_id, x.url, x.local_path, x.alt] for x in profile.media]],
         "Отзывы": [["Источник", "ID", "Автор", "Оценка", "Дата", "Текст", "URL"], *[[x.provider, x.provider_review_id, x.author, x.rating, x.published_at, x.text, str(x.url or "")] for x in profile.reviews]],
         "Ответы": [["Источник", "ID отзыва", "Автор", "Дата", "Ответ"], *[[x.provider, x.provider_review_id, reply.author, reply.published_at, reply.text] for x in profile.reviews for reply in x.organization_replies]],
         "Оценки": [["Источник", "Оценка", "Отзывы", "URL"], *[[x.provider, x.rating, x.reviews_count, str(x.url or "")] for x in profile.ratings]],

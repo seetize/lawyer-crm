@@ -43,7 +43,7 @@ from app.catalog.domain import (
     JobStatus,
     PartitionStatus,
 )
-from app.models import SalonProfile
+from app.models import BranchRef, SalonProfile
 
 
 def utc_now() -> datetime:
@@ -1131,6 +1131,43 @@ class CatalogRepository:
         refresh_hours: int = 168,
     ) -> list[dict[str, str]]:
         return self.pending_source_cards("yandex_maps", limit, refresh_hours)
+
+    def sibling_branches(self, location_id: str, provider: str) -> list[BranchRef]:
+        """Return every active exact-name branch already discovered in the city."""
+        with Session(self.engine) as session:
+            anchor = session.scalar(
+                select(SourceCardRow).where(
+                    SourceCardRow.location_id == location_id,
+                    SourceCardRow.provider == provider,
+                )
+            )
+            location = session.get(LocationRow, location_id)
+            if anchor is None or location is None or not anchor.normalized_name:
+                return []
+            rows = session.execute(
+                select(SourceCardRow)
+                .join(LocationRow, LocationRow.id == SourceCardRow.location_id)
+                .where(
+                    SourceCardRow.provider == provider,
+                    SourceCardRow.active.is_(True),
+                    SourceCardRow.normalized_name == anchor.normalized_name,
+                    LocationRow.city_id == location.city_id,
+                    LocationRow.status == "active",
+                )
+                .order_by(SourceCardRow.address, SourceCardRow.provider_object_id)
+            ).scalars().all()
+            return [
+                BranchRef(
+                    provider_id=row.provider_object_id,
+                    name=row.name,
+                    address=row.address,
+                    latitude=row.latitude,
+                    longitude=row.longitude,
+                    url=row.source_url,
+                    position=position,
+                )
+                for position, row in enumerate(rows, 1)
+            ]
 
     def pending_source_cards(
         self,

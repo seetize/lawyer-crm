@@ -2,7 +2,7 @@ import io
 import zipfile
 
 from app.catalog.excel_export import build_profile_xlsx
-from app.models import BranchRef, FeatureItem, SalonProfile, StoryItem
+from app.models import BranchRef, FeatureItem, MediaItem, SalonProfile, StoryItem
 
 
 def test_profile_export_is_valid_normalized_xlsx() -> None:
@@ -13,6 +13,7 @@ def test_profile_export_is_valid_normalized_xlsx() -> None:
         features=[FeatureItem(name="Wi-Fi", value="да", provider="yandex_maps")],
         stories=[StoryItem(provider_story_id="s1", title="Новинка", category="Услуги")],
         branches=[BranchRef(provider_id="b1", name="Филиал", address="ул. Кирова, 1")],
+        media=[MediaItem(provider_media_id="m1", url="https://example.test/photo.jpg")],
     )
 
     content = build_profile_xlsx(profile)
@@ -22,3 +23,4 @@ def test_profile_export_is_valid_normalized_xlsx() -> None:
         assert "Филиалы" in xml
         assert "Особенности" in xml
         assert "Истории" in xml
+        assert "Медиа" in xml

@@ -1,5 +1,6 @@
 from app.models import (
     FeatureItem,
+    MediaItem,
     NewsItem,
     OrganizationReply,
     Review,
@@ -91,6 +92,13 @@ def test_new_yandex_sections_are_rendered() -> None:
                 scope_type="city",
             )
         ],
+        media=[
+            MediaItem(
+                provider_media_id="photo-1",
+                url="https://example.test/photo.jpg",
+                local_path="data/media/yandex_maps/1/photo.jpg",
+            )
+        ],
     )
 
     assert "Хорошее место 2026" in render_section(profile, "main").text
@@ -100,4 +108,5 @@ def test_new_yandex_sections_are_rendered() -> None:
     assert features.count("📂 Удобства") == 1
     assert "Wi-Fi: Да" in features
     assert "3-е место" in render_section(profile, "rankings").text
+    assert "data/media/yandex_maps/1/photo.jpg" in render_section(profile, "media").text
     assert "не предоставлена" in render_section(profile, "masters").text
