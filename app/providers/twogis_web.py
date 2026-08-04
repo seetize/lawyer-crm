@@ -19,6 +19,12 @@ class TwoGisEnrichedProvider(PlaceProvider):
 
     async def collect(self, query: str, city: str | None = None) -> SalonProfile:
         profile = await self.api.collect(query, city)
+        return await self._enrich(profile)
+
+    async def collect_by_id(self, provider_id: str) -> SalonProfile:
+        return await self._enrich(await self.api.collect_by_id(provider_id))
+
+    async def _enrich(self, profile: SalonProfile) -> SalonProfile:
         base_url = f"https://2gis.ru/firm/{profile.provider_id}"
         headers = {"User-Agent": self.user_agent}
         try:
@@ -50,7 +56,7 @@ class TwoGisEnrichedProvider(PlaceProvider):
         except (httpx.HTTPError, ValueError):
             # API data remains useful when the public card is temporarily unavailable.
             pass
-        return profile
+        return SalonProfile.model_validate(profile.__dict__)
 
     @staticmethod
     def parse_services(

@@ -193,6 +193,7 @@ SQLAlchemy URL before running migrations.
 .\.venv\Scripts\python.exe -m alembic upgrade head
 .\.venv\Scripts\python.exe -B scripts\catalog_refresh.py
 .\.venv\Scripts\python.exe -B scripts\catalog_refresh.py --areas-only
+.\.venv\Scripts\python.exe -B scripts\export_catalog_xlsx.py "название салона"
 powershell -ExecutionPolicy RemoteSigned -File scripts\install_catalog_refresh.ps1
 ```
 
@@ -213,6 +214,11 @@ current navigation session. Browsing never calls map providers. The `Сравн�
 button produces a grounded, token-free narrative from saved categories,
 coordinates, services, ratings, review counts and review summaries; missing
 evidence is reported as unknown instead of being treated as zero.
+
+Detailed Yandex and 2GIS profiles are archived independently in
+`data/source_archives/yandex_raw.db` and `twogis_raw.db`; unchanged snapshots
+are deduplicated by content hash. Telegram exposes separate news, stories,
+features and branch sections plus a normalized multi-sheet Excel export.
 
 HTTP readiness and catalogue endpoints:
 

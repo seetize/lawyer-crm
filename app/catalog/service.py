@@ -10,6 +10,8 @@ from app.catalog.competitors import compute_competitors
 from app.catalog.db import CatalogRepository
 from app.catalog.discovery import DiscoveryError, YandexCityDiscovery
 from app.catalog.domain import CitySpec, CrawlSummary, DiscoveryCursor, JobStatus
+from app.catalog.source_archive import SourceArchive
+from app.providers.composite import CompositePlaceProvider
 from app.providers.yandex import YandexMapsProvider
 
 
@@ -26,6 +28,7 @@ class CityCatalogService:
         max_pages: int = 8,
         max_partition_depth: int = 2,
         refresh_hours: int = 168,
+        source_archive: SourceArchive | None = None,
     ) -> None:
         self.repository = repository
         self.discovery = discovery
@@ -33,6 +36,8 @@ class CityCatalogService:
         self.max_pages = max(1, min(max_pages, 40))
         self.max_partition_depth = max(0, min(max_partition_depth, 4))
         self.refresh_hours = max(1, refresh_hours)
+        self.provider = getattr(discovery, "provider", "yandex_maps")
+        self.source_archive = source_archive or SourceArchive()
 
     async def crawl_city(
         self,
@@ -158,7 +163,8 @@ class CityCatalogService:
 
     async def enrich_pending(self, limit: int = 10) -> dict[str, int]:
         cards = await asyncio.to_thread(
-            self.repository.pending_yandex_cards,
+            self.repository.pending_source_cards,
+            self.provider,
             limit,
             self.refresh_hours,
         )
@@ -168,11 +174,29 @@ class CityCatalogService:
                 profile = await self.detail_provider.collect_by_id(
                     card["provider_id"]
                 )
+                await asyncio.to_thread(self.source_archive.save, profile)
+                if self.provider == "2gis":
+                    existing = await asyncio.to_thread(
+                        self.repository.get_location, card["location_id"]
+                    )
+                    if existing and existing.get("profile"):
+                        from app.models import SalonProfile
+
+                        profile = CompositePlaceProvider._merge(
+                            SalonProfile.model_validate(existing["profile"]), profile
+                        )
                 await asyncio.to_thread(
                     self.repository.save_profile,
                     card["location_id"],
                     profile,
                 )
+                if self.provider != "yandex_maps":
+                    await asyncio.to_thread(
+                        self.repository.record_detail_success,
+                        card["provider_id"],
+                        self.provider,
+                        self.refresh_hours,
+                    )
                 completed += 1
             except Exception as error:
                 # A failed detail fetch must not invalidate discovery data.
@@ -184,6 +208,7 @@ class CityCatalogService:
                     self.repository.record_detail_failure,
                     card["provider_id"],
                     code,
+                    self.provider,
                 )
                 failed += 1
         return {"completed": completed, "failed": failed}

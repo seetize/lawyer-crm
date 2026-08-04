@@ -14,6 +14,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import (
     CallbackQuery,
+    BufferedInputFile,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     KeyboardButton,
@@ -31,6 +32,7 @@ from app.review_summary import build_review_summarizer
 from app.telegram_views import SECTIONS, render_section, section_keyboard
 from app.user_input import parse_request
 from app.catalog.db import CatalogRepository, haversine_km
+from app.catalog.excel_export import build_profile_xlsx
 from app.catalog.runtime import (
     build_catalog_repository,
     build_catalog_service,
@@ -595,10 +597,10 @@ async def send_catalog_card(
     if location is None:
         await message.answer("Заведение больше не найдено в активном каталоге.")
         return
+    from app.models import SalonProfile, SourceRating, SourceRef
+
     profile_data = location.get("profile")
     if profile_data:
-        from app.models import SalonProfile
-
         profile = SalonProfile.model_validate(profile_data)
         token = await report_cache.put(owner_user_id, profile, location_id=location_id)
         rendered = render_section(profile, "main")
@@ -612,18 +614,25 @@ async def send_catalog_card(
             disable_web_page_preview=True,
         )
         return
+    sources = location.get("sources") or []
+    profile = SalonProfile(
+        provider="+".join(dict.fromkeys(str(item.get("provider")) for item in sources)),
+        provider_id=str(sources[0].get("provider_id") if sources else location_id),
+        name=location["name"],
+        address=location.get("address"),
+        city=location.get("city"),
+        district=location.get("district"),
+        metro_stations=location.get("metros") or [],
+        latitude=location.get("latitude"),
+        longitude=location.get("longitude"),
+        categories=location.get("categories") or [],
+        ratings=[SourceRating(provider=str(item.get("provider")), rating=item.get("rating"), reviews_count=item.get("reviews_count"), url=item.get("url")) for item in sources],
+        sources=[SourceRef(provider=str(item.get("provider")), provider_id=item.get("provider_id"), url=item.get("url")) for item in sources],
+    )
+    token = await report_cache.put(owner_user_id, profile, location_id=location_id)
     await message.answer(
         stored_card_text(location),
-        reply_markup=InlineKeyboardMarkup(
-            inline_keyboard=[
-                [
-                    InlineKeyboardButton(
-                        text="📊 Сравнить по данным",
-                        callback_data=f"cmp:{location_id}",
-                    )
-                ]
-            ]
-        ),
+        reply_markup=section_keyboard(token, "main", compare_location_id=location_id),
     )
 
 
@@ -986,6 +995,22 @@ async def report_section(callback: CallbackQuery) -> None:
     except TelegramBadRequest as error:
         if "message is not modified" not in str(error):
             raise
+
+
+@router.callback_query(F.data.startswith("xlsx:"))
+async def report_excel(callback: CallbackQuery) -> None:
+    token = (callback.data or "").partition(":")[2]
+    profile = await report_cache.get(token, callback.from_user.id)
+    if profile is None or callback.message is None:
+        await callback.answer("Отчёт устарел. Повторите поиск.", show_alert=True)
+        return
+    await callback.answer("Формирую Excel…")
+    content = await asyncio.to_thread(build_profile_xlsx, profile)
+    filename = "".join(character for character in profile.name if character.isalnum() or character in " _-").strip()[:60] or "salon"
+    await callback.message.answer_document(
+        BufferedInputFile(content, filename=f"{filename}.xlsx"),
+        caption="Полная табличная выгрузка по заведению.",
+    )
 
 
 async def send_report(

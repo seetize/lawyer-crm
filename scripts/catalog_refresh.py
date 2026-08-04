@@ -47,14 +47,20 @@ async def run(force: bool, discovery_only: bool, areas_only: bool = False) -> di
     if force or not repository.list_zones(settings.catalog_city, "district"):
         districts = await refresh_districts(repository, city)
     enrichment = {"completed": 0, "failed": 0}
+    twogis_enrichment = {"completed": 0, "failed": 0}
     competitors = 0
     if not discovery_only:
         enrichment = await service.enrich_pending(settings.catalog_enrich_batch_size)
+        if twogis_service is not None:
+            twogis_enrichment = await twogis_service.enrich_pending(
+                settings.catalog_enrich_batch_size
+            )
         competitors = await service.rebuild_competitors(settings.catalog_city)
     cleanup = await asyncio.to_thread(repository.cleanup)
     return {
         "crawls": [summary.model_dump(mode="json") for summary in summaries],
         "enrichment": enrichment,
+        "twogis_enrichment": twogis_enrichment,
         "competitor_edges": competitors,
         "cleanup": cleanup,
         "areas_backfilled": areas_backfilled,

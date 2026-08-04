@@ -6,6 +6,7 @@ from app.catalog.domain import CitySpec, DiscoveryScope
 from app.catalog.service import CityCatalogService
 from app.config import Settings
 from app.providers.yandex import YandexMapsProvider
+from app.providers.twogis_web import TwoGisEnrichedProvider
 
 
 def build_city_spec(settings: Settings) -> CitySpec:
@@ -68,8 +69,8 @@ def build_twogis_catalog_service(
     return CityCatalogService(
         repository,
         TwoGisCityDiscovery(settings.twogis_api_key, settings.default_language),
-        YandexMapsProvider(settings.default_language),
-        max_pages=settings.catalog_max_pages,
-        max_partition_depth=0,
+        TwoGisEnrichedProvider(settings.twogis_api_key, settings.default_language),
+        max_pages=5,
+        max_partition_depth=max(3, settings.catalog_max_partition_depth),
         refresh_hours=settings.catalog_refresh_hours,
     )

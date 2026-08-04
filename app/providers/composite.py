@@ -57,6 +57,9 @@ class CompositePlaceProvider(PlaceProvider):
             "awards",
             "masters",
             "news",
+            "stories",
+            "features",
+            "branches",
             "search_rankings",
             "available_slots",
         ):

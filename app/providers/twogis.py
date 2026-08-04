@@ -4,7 +4,7 @@ from difflib import SequenceMatcher
 
 import httpx
 
-from app.models import SalonProfile, SourceRating, SourceRef
+from app.models import BranchRef, FeatureItem, SalonProfile, SourceRating, SourceRef
 from app.providers.base import PlaceNotFoundError, PlaceProvider
 
 
@@ -38,6 +38,19 @@ class TwoGisPlaceProvider(PlaceProvider):
             raise PlaceNotFoundError(f"Заведение не найдено: {clean_query}, {city}")
         best = max(items, key=lambda item: self._match_score(clean_query, item))
         return self._normalize(best, clean_query, city)
+
+    async def collect_by_id(self, provider_id: str) -> SalonProfile:
+        fields = "items.address,items.point,items.reviews,items.schedule,items.contact_groups,items.rubrics,items.attribute_groups,items.org"
+        async with httpx.AsyncClient(timeout=20) as client:
+            response = await client.get(
+                f"{self.base_url}/byid",
+                params={"id": provider_id, "key": self.api_key, "locale": self.locale, "fields": fields},
+            )
+        response.raise_for_status()
+        item = (response.json().get("result") or {}).get("items", [None])[0]
+        if not isinstance(item, dict):
+            raise PlaceNotFoundError(f"2ГИС ID не найден: {provider_id}")
+        return self._normalize(item, str(item.get("name") or provider_id), None)
 
     def _params(self, query: str, city: str | None) -> dict:
         return {
@@ -111,6 +124,9 @@ class TwoGisPlaceProvider(PlaceProvider):
             reviews_count=reviews.get("general_review_count_with_stars")
             or reviews.get("general_review_count"),
             opening_hours=TwoGisPlaceProvider._schedule(item.get("schedule", {})),
+            categories=[str(value.get("name")) for value in item.get("rubrics") or [] if isinstance(value, dict) and value.get("name")],
+            features=TwoGisPlaceProvider._features(item),
+            branches=TwoGisPlaceProvider._branches(item),
             website=website,
             map_url=source_url,
             ratings=[
@@ -130,6 +146,32 @@ class TwoGisPlaceProvider(PlaceProvider):
                 )
             ],
         )
+
+    @staticmethod
+    def _features(item: dict) -> list[FeatureItem]:
+        result: list[FeatureItem] = []
+        for group in item.get("attribute_groups") or []:
+            if not isinstance(group, dict):
+                continue
+            category = str(group.get("name") or "").strip() or None
+            for attribute in group.get("attributes") or []:
+                if not isinstance(attribute, dict):
+                    continue
+                name = str(attribute.get("name") or "").strip()
+                if name:
+                    result.append(FeatureItem(name=name, value=str(attribute.get("value") or attribute.get("text") or "") or None, category=category, provider="2gis"))
+        return result
+
+    @staticmethod
+    def _branches(item: dict) -> list[BranchRef]:
+        org = item.get("org") if isinstance(item.get("org"), dict) else {}
+        result = []
+        for position, branch in enumerate(org.get("branches") or []):
+            if not isinstance(branch, dict) or not branch.get("id"):
+                continue
+            point = branch.get("point") if isinstance(branch.get("point"), dict) else {}
+            result.append(BranchRef(provider_id=str(branch["id"]), name=str(branch.get("name") or item.get("name") or "Филиал"), address=branch.get("address_name"), latitude=point.get("lat"), longitude=point.get("lon"), url=f"https://2gis.ru/firm/{branch['id']}", position=position))
+        return result
 
     @staticmethod
     def _website(groups: list[dict]) -> str | None:

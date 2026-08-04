@@ -14,6 +14,9 @@ SECTIONS = (
     "services",
     "masters",
     "news",
+    "stories",
+    "features",
+    "branches",
     "rankings",
 )
 
@@ -42,6 +45,12 @@ def render_section(
         return RenderedSection(render_masters(profile))
     if section == "news":
         return _page(_news_blocks(profile), page)
+    if section == "stories":
+        return _page(_story_blocks(profile), page)
+    if section == "features":
+        return _page(_feature_blocks(profile), page)
+    if section == "branches":
+        return _page(_branch_blocks(profile), page)
     if section == "rankings":
         return RenderedSection(render_rankings(profile))
     return RenderedSection(render_main(profile))
@@ -117,10 +126,14 @@ def section_keyboard(
         [button("🏢 Основное", "main")],
         [button("💬 Отзывы", "reviews"), button("🧠 Выжимка", "summary")],
         [button("🕒 График", "hours"), button("📰 Новости", "news")],
+        [button("📖 Истории", "stories"), button("✨ Особенности", "features")],
+        [button("🏢 Филиалы", "branches")],
         [button("✂️ Услуги и цены", "services")],
         [button("👤 Мастера", "masters"), button("🔎 Место в поиске", "rankings")],
     ]
-    if total_pages > 1 and active in {"reviews", "services", "news"}:
+    if total_pages > 1 and active in {
+        "reviews", "services", "news", "stories", "features", "branches"
+    }:
         navigation: list[InlineKeyboardButton] = []
         if page > 0:
             navigation.append(
@@ -143,6 +156,7 @@ def section_keyboard(
                 )
             )
         rows.append(navigation)
+    rows.append([InlineKeyboardButton(text="📊 Скачать Excel", callback_data=f"xlsx:{token}")])
     if compare_location_id:
         rows.append(
             [
@@ -236,6 +250,40 @@ def _news_blocks(profile: SalonProfile) -> list[str]:
                 f"#{index}{date}\n{item.text}{photos}{link}"
             )
         )
+    return blocks
+
+
+def _story_blocks(profile: SalonProfile) -> list[str]:
+    if not profile.stories:
+        return [f"📖 Истории\n\n{NOT_PUBLIC}"]
+    blocks = [f"📖 Истории · {len(profile.stories)}"]
+    for story in sorted(profile.stories, key=lambda item: item.position):
+        blocks.append(
+            f"📂 {story.category or 'Без категории'}\n"
+            f"{story.title or story.text or 'Без названия'}"
+            + (f"\nМедиа: {len(story.media_urls)}" if story.media_urls else "")
+        )
+    return blocks
+
+
+def _feature_blocks(profile: SalonProfile) -> list[str]:
+    if not profile.features:
+        return [f"✨ Особенности\n\n{NOT_PUBLIC}"]
+    blocks = [f"✨ Особенности · {len(profile.features)}"]
+    for feature in profile.features:
+        blocks.append(
+            f"📂 {feature.category or 'Общее'}\n• {feature.name}"
+            + (f": {feature.value}" if feature.value else "")
+        )
+    return blocks
+
+
+def _branch_blocks(profile: SalonProfile) -> list[str]:
+    if not profile.branches:
+        return [f"🏢 Филиалы сети\n\n{NOT_PUBLIC}"]
+    blocks = [f"🏢 Филиалы сети · {len(profile.branches)}"]
+    for index, branch in enumerate(sorted(profile.branches, key=lambda item: item.position), 1):
+        blocks.append(f"{index}. {branch.name}\n{branch.address or NOT_PUBLIC}" + (f"\n{branch.url}" if branch.url else ""))
     return blocks
 
 

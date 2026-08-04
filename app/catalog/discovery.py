@@ -247,11 +247,15 @@ class TwoGisCityDiscovery:
         cursor: DiscoveryCursor,
     ) -> DiscoveryPage:
         params = {
-            "q": f"{category_query} {city.name}",
+            "q": category_query,
             "key": self.api_key,
             "locale": self.locale,
             "page": str(cursor.page + 1),
-            "page_size": "50",
+            # Demo and production keys both accept 10; larger values return
+            # contract_400 for some tariffs.
+            "page_size": "10",
+            "point1": f"{scope.west},{scope.north}",
+            "point2": f"{scope.east},{scope.south}",
             "fields": ",".join(
                 (
                     "items.address",

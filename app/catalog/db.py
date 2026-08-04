@@ -1130,18 +1130,34 @@ class CatalogRepository:
         limit: int = 10,
         refresh_hours: int = 168,
     ) -> list[dict[str, str]]:
+        return self.pending_source_cards("yandex_maps", limit, refresh_hours)
+
+    def pending_source_cards(
+        self,
+        provider: str,
+        limit: int = 10,
+        refresh_hours: int = 168,
+    ) -> list[dict[str, str]]:
         stale_before = utc_now() - timedelta(hours=max(1, refresh_hours))
         with Session(self.engine) as session:
+            freshness = (
+                or_(
+                    LocationRow.profile_json.is_(None),
+                    LocationRow.profile_checked_at.is_(None),
+                    LocationRow.profile_checked_at < stale_before,
+                )
+                if provider == "yandex_maps"
+                else or_(
+                    SourceCardRow.detail_retry_at.is_(None),
+                    SourceCardRow.detail_retry_at <= utc_now(),
+                )
+            )
             rows = session.execute(
                 select(SourceCardRow, LocationRow)
                 .join(LocationRow, LocationRow.id == SourceCardRow.location_id)
                 .where(
-                    SourceCardRow.provider == "yandex_maps",
-                    or_(
-                        LocationRow.profile_json.is_(None),
-                        LocationRow.profile_checked_at.is_(None),
-                        LocationRow.profile_checked_at < stale_before,
-                    ),
+                    SourceCardRow.provider == provider,
+                    freshness,
                     or_(
                         SourceCardRow.detail_retry_at.is_(None),
                         SourceCardRow.detail_retry_at <= utc_now(),
@@ -1163,11 +1179,28 @@ class CatalogRepository:
                 for source, location in rows
             ]
 
-    def record_detail_failure(self, provider_id: str, code: str) -> None:
+    def record_detail_success(
+        self, provider_id: str, provider: str, refresh_hours: int
+    ) -> None:
         with Session(self.engine) as session, session.begin():
             source = session.scalar(
                 select(SourceCardRow).where(
-                    SourceCardRow.provider == "yandex_maps",
+                    SourceCardRow.provider == provider,
+                    SourceCardRow.provider_object_id == provider_id,
+                )
+            )
+            if source is not None:
+                source.detail_failures = 0
+                source.detail_error_code = None
+                source.detail_retry_at = utc_now() + timedelta(hours=max(1, refresh_hours))
+
+    def record_detail_failure(
+        self, provider_id: str, code: str, provider: str = "yandex_maps"
+    ) -> None:
+        with Session(self.engine) as session, session.begin():
+            source = session.scalar(
+                select(SourceCardRow).where(
+                    SourceCardRow.provider == provider,
                     SourceCardRow.provider_object_id == provider_id,
                 )
             )

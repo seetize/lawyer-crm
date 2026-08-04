@@ -12,6 +12,8 @@ from bs4 import BeautifulSoup
 from curl_cffi.requests import AsyncSession, RequestsError
 
 from app.models import (
+    BranchRef,
+    FeatureItem,
     NewsItem,
     OrganizationReply,
     Review,
@@ -20,6 +22,7 @@ from app.models import (
     Service,
     SourceRating,
     SourceRef,
+    StoryItem,
 )
 from app.providers.base import PlaceNotFoundError, PlaceProvider
 
@@ -238,6 +241,9 @@ class YandexMapsProvider(PlaceProvider):
             map_url=source_url,
             booking_url=booking_url,
             masters=cls._masters(item),
+            features=cls._features(item),
+            stories=cls._stories(item),
+            branches=cls._branches(item),
             sources=[
                 SourceRef(
                     provider="yandex_maps",
@@ -246,6 +252,64 @@ class YandexMapsProvider(PlaceProvider):
                 )
             ],
         )
+
+    @staticmethod
+    def _features(item: dict[str, Any]) -> list[FeatureItem]:
+        result: list[FeatureItem] = []
+        groups = item.get("featureGroups") or item.get("feature_groups") or []
+        if isinstance(groups, dict):
+            groups = [groups]
+        for group in groups:
+            if not isinstance(group, dict):
+                continue
+            category = str(group.get("name") or group.get("title") or "").strip() or None
+            for feature in group.get("features") or group.get("items") or []:
+                if not isinstance(feature, dict):
+                    continue
+                name = str(feature.get("name") or feature.get("title") or "").strip()
+                value = feature.get("valueName", feature.get("value"))
+                if name:
+                    result.append(FeatureItem(name=name, value=str(value) if value is not None else None, category=category, provider="yandex_maps"))
+        properties = item.get("businessProperties") or {}
+        if isinstance(properties, dict):
+            for name, value in properties.items():
+                if isinstance(value, (str, int, float, bool)):
+                    result.append(FeatureItem(name=str(name), value=str(value), category="Свойства", provider="yandex_maps"))
+        return list({(x.category, x.name, x.value): x for x in result}.values())
+
+    @staticmethod
+    def _stories(item: dict[str, Any]) -> list[StoryItem]:
+        raw_items = item.get("stories") or item.get("storiesPreview") or []
+        if isinstance(raw_items, dict):
+            raw_items = raw_items.get("items") or raw_items.get("stories") or []
+        result: list[StoryItem] = []
+        for position, raw in enumerate(raw_items if isinstance(raw_items, list) else []):
+            if not isinstance(raw, dict):
+                continue
+            story_id = str(raw.get("id") or raw.get("storyId") or position)
+            media = []
+            for key in ("url", "image", "imageUrl", "videoUrl"):
+                value = raw.get(key)
+                if isinstance(value, str) and value.startswith("http"):
+                    media.append(value)
+            result.append(StoryItem(provider_story_id=story_id, title=raw.get("title") or raw.get("name"), text=raw.get("text") or raw.get("description"), category=raw.get("category") or raw.get("categoryName"), media_urls=list(dict.fromkeys(media)), url=raw.get("shareUrl"), position=position))
+        return result
+
+    @staticmethod
+    def _branches(item: dict[str, Any]) -> list[BranchRef]:
+        raw_items = item.get("branches") or item.get("relatedPlaces") or []
+        if isinstance(raw_items, dict):
+            raw_items = raw_items.get("items") or raw_items.get("places") or []
+        result: list[BranchRef] = []
+        for position, raw in enumerate(raw_items if isinstance(raw_items, list) else []):
+            if not isinstance(raw, dict):
+                continue
+            branch_id = str(raw.get("id") or raw.get("oid") or "")
+            if not branch_id:
+                continue
+            coordinates = raw.get("coordinates") or []
+            result.append(BranchRef(provider_id=branch_id, name=str(raw.get("title") or raw.get("name") or "Филиал"), address=raw.get("fullAddress") or raw.get("address"), longitude=float(coordinates[0]) if isinstance(coordinates, list) and len(coordinates) > 1 else None, latitude=float(coordinates[1]) if isinstance(coordinates, list) and len(coordinates) > 1 else None, url=f"https://yandex.ru/maps/org/{branch_id}/", position=position))
+        return result
 
     @staticmethod
     def _metro_stations(item: dict[str, Any]) -> list[str]:
