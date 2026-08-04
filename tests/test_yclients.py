@@ -74,3 +74,17 @@ def test_nested_public_booking_dates_are_found() -> None:
     )
 
     assert dates == ["2026-07-29", "2026-07-30"]
+
+
+def test_yclients_booking_form_exposes_network_branches() -> None:
+    branches = YClientsEnricher.parse_branches(
+        {
+            "companies": [
+                {"id": 1, "name": "Сеть", "address": "ул. Кирова, 1"},
+                {"id": 2, "name": "Сеть", "address": "ул. Победы, 2"},
+            ]
+        },
+        "https://n123.yclients.com/",
+    )
+
+    assert [branch.provider_id for branch in branches] == ["1", "2"]

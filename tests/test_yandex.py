@@ -157,13 +157,20 @@ def test_yandex_news_payload_is_normalized() -> None:
 def test_yandex_card_normalizes_features_stories_and_branches() -> None:
     item = {
         "featureGroups": [{"name": "Удобства", "features": [{"name": "Wi-Fi", "valueName": "да"}]}],
+        "businessProperties": {"has_verified_owner": False, "geoproduct_poi_color": "#fff"},
         "stories": [{"id": "s1", "title": "Новинка", "category": "Услуги", "imageUrl": "https://example.test/story.jpg"}],
         "branches": [{"id": "42", "title": "Филиал", "address": "ул. Кирова, 1", "coordinates": [39.8, 57.6]}],
     }
 
     assert YandexMapsProvider._features(item)[0].name == "Wi-Fi"
+    assert len(YandexMapsProvider._features(item)) == 1
     assert YandexMapsProvider._stories(item)[0].category == "Услуги"
     assert YandexMapsProvider._branches(item)[0].provider_id == "42"
+
+    html = '<script type="application/json">{"widgets":{"storyGroups":[{"categoryName":"Услуги","items":[{"storyId":"nested","title":"Акция","media":{"imageUrl":"https://example.test/a.jpg"}}]}]}}</script>'
+    stories = YandexMapsProvider.parse_stories_html(html)
+    assert stories[0].provider_story_id == "nested"
+    assert stories[0].category == "Услуги"
 
 
 def test_ranking_scope_uses_city_and_metro_rules() -> None:

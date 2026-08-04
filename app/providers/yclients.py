@@ -13,7 +13,7 @@ import httpx
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from curl_cffi.requests import AsyncSession, RequestsError
 
-from app.models import Review, SalonProfile, Service, SourceRef
+from app.models import BranchRef, Review, SalonProfile, Service, SourceRef
 from app.providers.base import ProfileEnricher
 
 
@@ -93,6 +93,10 @@ class YClientsEnricher(ProfileEnricher):
                 if self.user_token
                 else []
             )
+
+        branches = self.parse_branches(form_data, str(profile.booking_url))
+        if branches:
+            profile.branches = self._merge_branches(profile.branches, branches)
 
         if services:
             profile.services = self._merge_services(profile.services, services)
@@ -177,6 +181,10 @@ class YClientsEnricher(ProfileEnricher):
                 app_version,
                 origin,
             )
+
+        branches = self.parse_branches(form_data, booking_url)
+        if branches:
+            profile.branches = self._merge_branches(profile.branches, branches)
 
         if services:
             profile.services = self._merge_services(profile.services, services)
@@ -544,6 +552,48 @@ class YClientsEnricher(ProfileEnricher):
             if isinstance(company, dict) and str(company.get("id", "")).isdigit():
                 return int(company["id"])
         return None
+
+    @classmethod
+    def parse_branches(cls, data: Any, booking_url: str) -> list[BranchRef]:
+        result: list[BranchRef] = []
+
+        def walk(value: Any, inside: bool = False) -> None:
+            if isinstance(value, list):
+                for child in value:
+                    walk(child, inside)
+                return
+            if not isinstance(value, dict):
+                return
+            identifier = value.get("company_id") or value.get("companyId") or value.get("id")
+            name = value.get("title") or value.get("name")
+            address = value.get("address") or value.get("address_name")
+            if inside and identifier and name and address:
+                result.append(
+                    BranchRef(
+                        provider_id=str(identifier),
+                        name=str(name),
+                        address=str(address),
+                        latitude=value.get("latitude") or value.get("lat"),
+                        longitude=value.get("longitude") or value.get("lon"),
+                        url=booking_url,
+                        position=len(result),
+                    )
+                )
+            for key, child in value.items():
+                walk(
+                    child,
+                    inside
+                    or any(marker in key.casefold() for marker in ("branch", "compan", "location", "salon")),
+                )
+
+        walk(data)
+        return list({branch.provider_id: branch for branch in result}.values())
+
+    @staticmethod
+    def _merge_branches(
+        base: list[BranchRef], extra: list[BranchRef]
+    ) -> list[BranchRef]:
+        return list({branch.provider_id: branch for branch in [*base, *extra]}.values())
 
     @staticmethod
     def _data(payload: Any) -> Any:

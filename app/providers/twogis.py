@@ -50,7 +50,55 @@ class TwoGisPlaceProvider(PlaceProvider):
         item = (response.json().get("result") or {}).get("items", [None])[0]
         if not isinstance(item, dict):
             raise PlaceNotFoundError(f"2ГИС ID не найден: {provider_id}")
-        return self._normalize(item, str(item.get("name") or provider_id), None)
+        profile = self._normalize(item, str(item.get("name") or provider_id), None)
+        profile.branches = await self._fetch_org_branches(item)
+        return profile
+
+    async def _fetch_org_branches(
+        self, item: dict
+    ) -> list[BranchRef]:
+        org = item.get("org") if isinstance(item.get("org"), dict) else {}
+        org_id = org.get("id")
+        point = item.get("point") if isinstance(item.get("point"), dict) else {}
+        if not org_id or point.get("lon") is None or point.get("lat") is None:
+            return self._branches(item)
+        branches: list[BranchRef] = []
+        fields = "items.address,items.point,items.org"
+        async with httpx.AsyncClient(timeout=20) as client:
+            for page in range(1, 6):
+                response = await client.get(
+                self.base_url,
+                params={
+                    "org_id": org_id,
+                    "point": f"{point['lon']},{point['lat']}",
+                    "radius": 40000,
+                    "page": page,
+                    "page_size": 10,
+                    "fields": fields,
+                    "key": self.api_key,
+                    "locale": self.locale,
+                },
+            )
+                response.raise_for_status()
+                raw_items = (response.json().get("result") or {}).get("items") or []
+                for raw in raw_items:
+                    if not isinstance(raw, dict) or not raw.get("id"):
+                        continue
+                    raw_point = raw.get("point") if isinstance(raw.get("point"), dict) else {}
+                    branches.append(
+                        BranchRef(
+                            provider_id=str(raw["id"]),
+                            name=str(raw.get("name") or item.get("name") or "Филиал"),
+                            address=raw.get("address_name") or raw.get("full_name"),
+                            latitude=raw_point.get("lat"),
+                            longitude=raw_point.get("lon"),
+                            url=f"https://2gis.ru/firm/{raw['id']}",
+                            position=len(branches),
+                        )
+                    )
+                if len(raw_items) < 10:
+                    break
+        return list({branch.provider_id: branch for branch in branches}.values())
 
     def _params(self, query: str, city: str | None) -> dict:
         return {
@@ -145,6 +193,7 @@ class TwoGisPlaceProvider(PlaceProvider):
                     url=source_url,
                 )
             ],
+            source_payloads={"2gis": item},
         )
 
     @staticmethod

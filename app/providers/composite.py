@@ -89,6 +89,10 @@ class CompositePlaceProvider(PlaceProvider):
         data["provider"] = "+".join(
             dict.fromkeys(source.provider for source in data["sources"])
         )
+        data["source_payloads"] = {
+            **base.source_payloads,
+            **extra.source_payloads,
+        }
         return SalonProfile.model_validate(data)
 
     @staticmethod

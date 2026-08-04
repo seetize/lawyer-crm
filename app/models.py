@@ -1,4 +1,5 @@
 from datetime import UTC, datetime
+from typing import Any
 
 from pydantic import BaseModel, Field, HttpUrl
 
@@ -125,6 +126,7 @@ class SalonProfile(BaseModel):
     available_slots: list[str] = Field(default_factory=list)
     booking_url: HttpUrl | None = None
     sources: list[SourceRef] = Field(default_factory=list)
+    source_payloads: dict[str, Any] = Field(default_factory=dict)
     collected_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 

@@ -270,11 +270,18 @@ def _feature_blocks(profile: SalonProfile) -> list[str]:
     if not profile.features:
         return [f"✨ Особенности\n\n{NOT_PUBLIC}"]
     blocks = [f"✨ Особенности · {len(profile.features)}"]
+    grouped: dict[str, list[str]] = {}
     for feature in profile.features:
-        blocks.append(
-            f"📂 {feature.category or 'Общее'}\n• {feature.name}"
-            + (f": {feature.value}" if feature.value else "")
+        value = feature.value
+        if value == "True":
+            value = "Да"
+        elif value == "False":
+            value = "Нет"
+        grouped.setdefault(feature.category or "Общее", []).append(
+            f"• {feature.name}" + (f": {value}" if value else "")
         )
+    for category, features in grouped.items():
+        blocks.append(f"📂 {category}\n" + "\n".join(features))
     return blocks
 
 

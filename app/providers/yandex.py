@@ -91,16 +91,21 @@ class YandexMapsProvider(PlaceProvider):
                 key=lambda candidate: self._match_score(query, candidate),
             )
             profile = self.normalize_organization(item)
-            reviews, services, news, rankings = await asyncio.gather(
+            reviews, services, news, rankings, branches = await asyncio.gather(
                 self._fetch_all_reviews(client, item),
                 self._fetch_prices(client, item),
                 self._fetch_news(item),
                 self._fetch_search_rankings(item, city),
+                self._fetch_branches(client, item, city),
             )
             profile.reviews = reviews
             self._set_review_coverage(profile, item)
             profile.services = services
             profile.news = news
+            profile.stories = self._merge_stories(
+                profile.stories, self.parse_stories_html(response.text)
+            )
+            profile.branches = branches or profile.branches
             profile.search_rankings = rankings
             return profile
 
@@ -138,16 +143,21 @@ class YandexMapsProvider(PlaceProvider):
                     f"Точная карточка Яндекс {provider_id} не найдена"
                 )
             profile = self.normalize_organization(item)
-            reviews, services, news, rankings = await asyncio.gather(
+            reviews, services, news, rankings, branches = await asyncio.gather(
                 self._fetch_all_reviews(client, item),
                 self._fetch_prices(client, item),
                 self._fetch_news(item),
                 self._fetch_search_rankings(item, profile.city),
+                self._fetch_branches(client, item, profile.city),
             )
             profile.reviews = reviews
             self._set_review_coverage(profile, item)
             profile.services = services
             profile.news = news
+            profile.stories = self._merge_stories(
+                profile.stories, self.parse_stories_html(response.text)
+            )
+            profile.branches = branches or profile.branches
             profile.search_rankings = rankings
             return profile
 
@@ -251,6 +261,7 @@ class YandexMapsProvider(PlaceProvider):
                     url=source_url,
                 )
             ],
+            source_payloads={"yandex_maps": item},
         )
 
     @staticmethod
@@ -270,30 +281,54 @@ class YandexMapsProvider(PlaceProvider):
                 value = feature.get("valueName", feature.get("value"))
                 if name:
                     result.append(FeatureItem(name=name, value=str(value) if value is not None else None, category=category, provider="yandex_maps"))
-        properties = item.get("businessProperties") or {}
-        if isinstance(properties, dict):
-            for name, value in properties.items():
-                if isinstance(value, (str, int, float, bool)):
-                    result.append(FeatureItem(name=str(name), value=str(value), category="Свойства", provider="yandex_maps"))
         return list({(x.category, x.name, x.value): x for x in result}.values())
 
-    @staticmethod
-    def _stories(item: dict[str, Any]) -> list[StoryItem]:
-        raw_items = item.get("stories") or item.get("storiesPreview") or []
-        if isinstance(raw_items, dict):
-            raw_items = raw_items.get("items") or raw_items.get("stories") or []
+    @classmethod
+    def _stories(cls, item: dict[str, Any]) -> list[StoryItem]:
         result: list[StoryItem] = []
-        for position, raw in enumerate(raw_items if isinstance(raw_items, list) else []):
-            if not isinstance(raw, dict):
-                continue
-            story_id = str(raw.get("id") or raw.get("storyId") or position)
-            media = []
-            for key in ("url", "image", "imageUrl", "videoUrl"):
-                value = raw.get(key)
-                if isinstance(value, str) and value.startswith("http"):
-                    media.append(value)
-            result.append(StoryItem(provider_story_id=story_id, title=raw.get("title") or raw.get("name"), text=raw.get("text") or raw.get("description"), category=raw.get("category") or raw.get("categoryName"), media_urls=list(dict.fromkeys(media)), url=raw.get("shareUrl"), position=position))
+        position = 0
+
+        def visit(value: Any, category: str | None = None, inside: bool = False) -> None:
+            nonlocal position
+            if isinstance(value, list):
+                for child in value:
+                    visit(child, category, inside)
+                return
+            if not isinstance(value, dict):
+                return
+            local_category = str(value.get("categoryName") or value.get("category") or category or "").strip() or None
+            identifier = value.get("storyId") or (value.get("id") if inside else None)
+            media = cls._story_media(value)
+            title = value.get("title") or value.get("name")
+            text = value.get("text") or value.get("description")
+            if identifier is not None and (media or title or text):
+                result.append(StoryItem(provider_story_id=str(identifier), title=title, text=text, category=local_category, media_urls=media, url=value.get("shareUrl") or value.get("targetUrl"), position=position))
+                position += 1
+            for key, child in value.items():
+                visit(child, local_category, inside or "stor" in key.casefold())
+
+        visit(item)
         return result
+
+    @classmethod
+    def parse_stories_html(cls, html: str) -> list[StoryItem]:
+        result: list[StoryItem] = []
+        for payload in cls._state_payloads(html):
+            result.extend(cls._stories(payload))
+        return cls._merge_stories([], result)
+
+    @classmethod
+    def _story_media(cls, value: dict[str, Any]) -> list[str]:
+        urls: list[str] = []
+        for nested in cls._walk(value):
+            for key, raw in nested.items():
+                if any(marker in key.casefold() for marker in ("image", "video", "media", "photo", "urltemplate")) and isinstance(raw, str) and raw.startswith("http"):
+                    urls.append(raw.replace("%s", "XL"))
+        return list(dict.fromkeys(urls))
+
+    @staticmethod
+    def _merge_stories(base: list[StoryItem], extra: list[StoryItem]) -> list[StoryItem]:
+        return list({story.provider_story_id: story for story in [*base, *extra]}.values())
 
     @staticmethod
     def _branches(item: dict[str, Any]) -> list[BranchRef]:
@@ -310,6 +345,48 @@ class YandexMapsProvider(PlaceProvider):
             coordinates = raw.get("coordinates") or []
             result.append(BranchRef(provider_id=branch_id, name=str(raw.get("title") or raw.get("name") or "Филиал"), address=raw.get("fullAddress") or raw.get("address"), longitude=float(coordinates[0]) if isinstance(coordinates, list) and len(coordinates) > 1 else None, latitude=float(coordinates[1]) if isinstance(coordinates, list) and len(coordinates) > 1 else None, url=f"https://yandex.ru/maps/org/{branch_id}/", position=position))
         return result
+
+    async def _fetch_branches(
+        self,
+        client: httpx.AsyncClient,
+        item: dict[str, Any],
+        city: str | None,
+    ) -> list[BranchRef]:
+        name = str(item.get("title") or item.get("name") or "").strip()
+        if not name:
+            return []
+        try:
+            response = await client.get(
+                self.search_url,
+                params={"text": " ".join(part for part in (name, city) if part)},
+            )
+            response.raise_for_status()
+        except httpx.HTTPError:
+            return []
+        expected = self._normalized_name(name)
+        branches: list[BranchRef] = []
+        for candidate in self.parse_organizations(response.text):
+            candidate_name = str(candidate.get("title") or candidate.get("name") or "")
+            if self._normalized_name(candidate_name) != expected:
+                continue
+            branch_id = str(candidate.get("id") or "")
+            coordinates = candidate.get("coordinates") or []
+            branches.append(
+                BranchRef(
+                    provider_id=branch_id,
+                    name=candidate_name,
+                    address=candidate.get("fullAddress") or candidate.get("address"),
+                    longitude=float(coordinates[0]) if isinstance(coordinates, list) and len(coordinates) > 1 else None,
+                    latitude=float(coordinates[1]) if isinstance(coordinates, list) and len(coordinates) > 1 else None,
+                    url=f"https://yandex.ru/maps/org/{branch_id}/",
+                    position=0 if branch_id == str(item.get("id")) else len(branches) + 1,
+                )
+            )
+        return list({branch.provider_id: branch for branch in branches}.values())
+
+    @staticmethod
+    def _normalized_name(value: str) -> str:
+        return re.sub(r"[^a-zа-я0-9]+", "", value.casefold().replace("ё", "е"))
 
     @staticmethod
     def _metro_stations(item: dict[str, Any]) -> list[str]:

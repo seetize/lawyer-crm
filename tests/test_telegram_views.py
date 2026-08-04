@@ -1,4 +1,5 @@
 from app.models import (
+    FeatureItem,
     NewsItem,
     OrganizationReply,
     Review,
@@ -76,6 +77,10 @@ def test_new_yandex_sections_are_rendered() -> None:
         masters=[],
         services=[Service(name="Маникюр", category="Ногти", price="1000 ₽")],
         news=[NewsItem(provider_news_id="42", text="Открыли новый кабинет")],
+        features=[
+            FeatureItem(name="Wi-Fi", value="True", category="Удобства"),
+            FeatureItem(name="Парковка", value="False", category="Удобства"),
+        ],
         search_rankings=[
             SearchRanking(
                 query="ногтевая студия",
@@ -91,5 +96,8 @@ def test_new_yandex_sections_are_rendered() -> None:
     assert "Хорошее место 2026" in render_section(profile, "main").text
     assert "📂 Ногти" in render_section(profile, "services").text
     assert "Открыли новый кабинет" in render_section(profile, "news").text
+    features = render_section(profile, "features").text
+    assert features.count("📂 Удобства") == 1
+    assert "Wi-Fi: Да" in features
     assert "3-е место" in render_section(profile, "rankings").text
     assert "не предоставлена" in render_section(profile, "masters").text
