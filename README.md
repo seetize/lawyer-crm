@@ -226,6 +226,8 @@ Card, story and news media are downloaded to
 stored in passports and on the `Медиа` Excel sheet. Yandex stories are extracted from
 all embedded card-state payloads. Internal map-rendering flags are excluded
 from user-facing features; full source card payloads remain in the raw archive.
+The Excel export contains separate sheets for every passport section and also
+lossless `Полный паспорт` and `Сырые данные` sheets flattened by JSON path.
 
 HTTP readiness and catalogue endpoints:
 

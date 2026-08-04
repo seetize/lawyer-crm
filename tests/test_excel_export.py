@@ -14,6 +14,12 @@ def test_profile_export_is_valid_normalized_xlsx() -> None:
         stories=[StoryItem(provider_story_id="s1", title="Новинка", category="Услуги")],
         branches=[BranchRef(provider_id="b1", name="Филиал", address="ул. Кирова, 1")],
         media=[MediaItem(provider_media_id="m1", url="https://example.test/photo.jpg")],
+        phones=["+7 999 000-00-00"],
+        metro_stations=["Площадь"],
+        masters=["Анна"],
+        available_slots=["2026-08-06 10:00"],
+        reviews_summary="Сильный сервис",
+        source_payloads={"yandex_maps": {"nested": {"hidden_field": "raw-value"}}},
     )
 
     content = build_profile_xlsx(profile)
@@ -24,3 +30,16 @@ def test_profile_export_is_valid_normalized_xlsx() -> None:
         assert "Особенности" in xml
         assert "Истории" in xml
         assert "Медиа" in xml
+        assert "Телефоны" in xml
+        assert "Метро" in xml
+        assert "Мастера" in xml
+        assert "Окна записи" in xml
+        assert "Полный паспорт" in xml
+        assert "Сырые данные" in xml
+        worksheet_text = "\n".join(
+            workbook.read(name).decode("utf-8")
+            for name in workbook.namelist()
+            if name.startswith("xl/worksheets/")
+        )
+        assert "raw-value" in worksheet_text
+        assert "Сильный сервис" in worksheet_text
