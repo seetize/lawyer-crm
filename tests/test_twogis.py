@@ -1,6 +1,13 @@
 from app.providers.twogis import TwoGisPlaceProvider
 
 
+def test_twogis_closed_branch_is_inactive() -> None:
+    assert TwoGisPlaceProvider.is_active({"status": "open"})
+    assert not TwoGisPlaceProvider.is_active(
+        {"flags": {"temporarily_closed": True}}
+    )
+
+
 def test_twogis_response_is_normalized() -> None:
     profile = TwoGisPlaceProvider._normalize(
         {

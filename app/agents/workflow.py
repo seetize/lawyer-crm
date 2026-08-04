@@ -68,3 +68,29 @@ class SalonAgentWorkflow:
             missing_fields=missing_fields,
             attempts=self.max_attempts,
         )
+
+    async def run_profile(
+        self,
+        profile,
+        criteria: list[str] | None = None,
+        deliver: Callable[[str], Awaitable[None]] | None = None,
+    ) -> AgentRunResult:
+        """Validate and publish a profile selected by an exact provider ID."""
+        review = await self.reviewer.run(profile)
+        profile = await self.review_analyst.run(profile)
+        if review.is_valid:
+            status, report = await self.publisher.run(
+                profile, review, criteria, deliver
+            )
+        else:
+            status = WorkflowStatus.NEEDS_REWORK
+            report = build_report(profile, criteria)
+            if deliver:
+                await deliver(report)
+        return AgentRunResult(
+            status=status,
+            profile=profile,
+            report=report,
+            missing_fields=review.missing_fields,
+            attempts=1,
+        )

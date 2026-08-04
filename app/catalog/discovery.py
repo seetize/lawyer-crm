@@ -16,6 +16,8 @@ from app.catalog.domain import (
     DiscoveryScope,
 )
 from app.providers.yandex import YandexMapsProvider
+from app.providers.twogis import TwoGisPlaceProvider
+from app.curl_runtime import curl_ca_bundle
 
 
 class DiscoveryError(RuntimeError):
@@ -81,6 +83,7 @@ class YandexCityDiscovery:
                 impersonate="chrome",
                 headers={"Referer": referer, "X-Retpath-Y": referer},
                 timeout=30,
+                verify=curl_ca_bundle(),
             ) as session:
                 payload, _csrf = await YandexMapsProvider._signed_api_get(
                     session,
@@ -120,6 +123,8 @@ class YandexCityDiscovery:
         page_ids: list[str] = []
         for item in raw_items:
             if not isinstance(item, dict) or item.get("type", "business") != "business":
+                continue
+            if not YandexMapsProvider.is_active(item):
                 continue
             provider_id = str(item.get("id") or "")
             name = str(item.get("title") or item.get("name") or "").strip()
@@ -263,6 +268,7 @@ class TwoGisCityDiscovery:
                     "items.reviews",
                     "items.contact_groups",
                     "items.rubrics",
+                    "items.flags",
                 )
             ),
         }
@@ -314,6 +320,8 @@ class TwoGisCityDiscovery:
         ids: list[str] = []
         for item in items:
             if not isinstance(item, dict):
+                continue
+            if not TwoGisPlaceProvider.is_active(item):
                 continue
             provider_id = str(item.get("id") or "")
             name = str(item.get("name") or "").strip()

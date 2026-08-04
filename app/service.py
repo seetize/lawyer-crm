@@ -35,3 +35,21 @@ class SalonReportService:
         deliver: Callable[[str], Awaitable[None]] | None = None,
     ) -> AgentRunResult:
         return await self.workflow.run(query, city, criteria, deliver)
+
+    async def search_candidates(self, query: str, city: str | None = None):
+        provider = self.workflow.collector.provider
+        search = getattr(provider, "search_candidates", None)
+        return await search(query, city) if search else []
+
+    async def create_report_exact(
+        self,
+        provider_name: str,
+        provider_id: str,
+        criteria: list[str] | None = None,
+    ) -> AgentRunResult:
+        provider = self.workflow.collector.provider
+        collect = getattr(provider, "collect_by_id", None)
+        if collect is None:
+            raise RuntimeError("Точный сбор по ID источника недоступен")
+        profile = await collect(provider_name, provider_id)
+        return await self.workflow.run_profile(profile, criteria)

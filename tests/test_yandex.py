@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 from app.providers.yandex import YandexMapsProvider
 
 
@@ -286,3 +288,63 @@ def test_story_screens_do_not_become_duplicate_stories() -> None:
         "https://example.test/1.jpg",
         "https://example.test/2.jpg",
     ]
+
+
+@pytest.mark.asyncio
+async def test_lazy_story_endpoint_is_normalized(monkeypatch) -> None:
+    class FakeSession:
+        def __init__(self, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+    async def signed_get(session, url, params, csrf_token=None):
+        return {
+            "data": {
+                "totalCount": 1,
+                "stories": [
+                    {
+                        "id": "story-42",
+                        "title": "Новинка",
+                        "screens": [
+                            {
+                                "id": "screen-1",
+                                "type": "photo",
+                                "content": [
+                                    {"urlTemplate": "https://example.test/%s.jpg"}
+                                ],
+                            }
+                        ],
+                    }
+                ],
+            }
+        }, "csrf"
+
+    monkeypatch.setattr("app.providers.yandex.AsyncSession", FakeSession)
+    monkeypatch.setattr(
+        YandexMapsProvider,
+        "_signed_api_get",
+        staticmethod(signed_get),
+    )
+
+    stories = await YandexMapsProvider()._fetch_stories(
+        {"id": "42", "hasStories": True}
+    )
+
+    assert len(stories) == 1
+    assert stories[0].provider_story_id == "story-42"
+    assert stories[0].media_urls == ["https://example.test/XL.jpg"]
+
+
+def test_explicit_closed_cards_are_inactive() -> None:
+    assert YandexMapsProvider.is_active({"status": "open", "title": "Салон"})
+    assert not YandexMapsProvider.is_active(
+        {"status": "temporarily-closed", "title": "Салон"}
+    )
+    assert not YandexMapsProvider.is_active(
+        {"status": "open", "title": "Салон (закрыто)"}
+    )

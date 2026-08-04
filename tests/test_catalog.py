@@ -112,6 +112,12 @@ def test_discovery_parser_reads_only_explicit_business_items() -> None:
                     "title": "Реклама",
                     "isAdvert": True,
                 },
+                {
+                    "type": "business",
+                    "id": "103",
+                    "title": "Закрытый филиал",
+                    "status": "temporarily_closed",
+                },
                 {"type": "transit", "id": "999", "title": "Остановка"},
             ],
             "totalResultCount": 30,
@@ -129,7 +135,7 @@ def test_discovery_parser_reads_only_explicit_business_items() -> None:
     assert [item.provider_id for item in page.cards] == ["101", "102"]
     assert page.cards[1].is_advert is True
     assert page.next_cursor is not None
-    assert page.next_cursor.skip == 3
+    assert page.next_cursor.skip == 4
     assert page.next_cursor.context == "ctx"
     assert page.cards[0].district == "Кировский район"
     assert page.cards[0].metro_stations == ["Площадь Ленина"]

@@ -218,15 +218,18 @@ evidence is reported as unknown instead of being treated as zero.
 Detailed Yandex and 2GIS profiles are archived independently in
 `data/source_archives/yandex_raw.db` and `twogis_raw.db`; unchanged snapshots
 are deduplicated by content hash. Telegram exposes separate news, stories,
-features and branch sections plus a normalized multi-sheet Excel export.
-Network branches are resolved through 2GIS organization IDs, exact-name Yandex
-search, matching city-catalogue cards and YCLIENTS booking-form companies.
+features and branch sections plus a normalized multi-sheet Excel export. A name
+search first shows every active Yandex card whose normalized name contains the
+query; explicit temporary and permanent closure markers are excluded. Network
+branches are resolved through 2GIS organization IDs, substring Yandex search,
+matching city-catalogue cards and YCLIENTS booking-form companies.
 Card, story and news media are downloaded to
 `data/media/<provider>/<provider_id>/`; their source URLs and local paths are
 stored in passports and on the `Медиа` Excel sheet. Yandex stories are extracted from
-all embedded card-state payloads. Internal map-rendering flags are excluded
+embedded card state and the lazy stories viewer endpoint. Internal map-rendering flags are excluded
 from user-facing features; full source card payloads remain in the raw archive.
-The Excel export contains separate sheets for every passport section and also
+In the Excel review sheet each review and all company replies occupy one row.
+The export contains separate sheets for every passport section and also
 lossless `Полный паспорт` and `Сырые данные` sheets flattened by JSON path.
 
 HTTP readiness and catalogue endpoints:

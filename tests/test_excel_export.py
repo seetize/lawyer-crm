@@ -2,7 +2,15 @@ import io
 import zipfile
 
 from app.catalog.excel_export import build_profile_xlsx
-from app.models import BranchRef, FeatureItem, MediaItem, SalonProfile, StoryItem
+from app.models import (
+    BranchRef,
+    FeatureItem,
+    MediaItem,
+    OrganizationReply,
+    Review,
+    SalonProfile,
+    StoryItem,
+)
 
 
 def test_profile_export_is_valid_normalized_xlsx() -> None:
@@ -20,6 +28,19 @@ def test_profile_export_is_valid_normalized_xlsx() -> None:
         available_slots=["2026-08-06 10:00"],
         reviews_summary="Сильный сервис",
         source_payloads={"yandex_maps": {"nested": {"hidden_field": "raw-value"}}},
+        reviews=[
+            Review(
+                author="Клиент",
+                text="Отзыв клиента",
+                organization_replies=[
+                    OrganizationReply(
+                        author="Салон",
+                        published_at="2026-08-01",
+                        text="Ответ салона",
+                    )
+                ],
+            )
+        ],
     )
 
     content = build_profile_xlsx(profile)
@@ -43,3 +64,6 @@ def test_profile_export_is_valid_normalized_xlsx() -> None:
         )
         assert "raw-value" in worksheet_text
         assert "Сильный сервис" in worksheet_text
+        assert "Отзыв клиента" in worksheet_text
+        assert "Ответ салона" in worksheet_text
+        assert "Ответы" not in xml

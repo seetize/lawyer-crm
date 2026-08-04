@@ -34,6 +34,7 @@ class TwoGisPlaceProvider(PlaceProvider):
             for item in response.json().get("result", {}).get("items", []):
                 items_by_id[item["id"]] = item
         items = list(items_by_id.values())
+        items = [item for item in items if self.is_active(item)]
         if not items:
             raise PlaceNotFoundError(f"Заведение не найдено: {clean_query}, {city}")
         best = max(items, key=lambda item: self._match_score(clean_query, item))
@@ -50,6 +51,10 @@ class TwoGisPlaceProvider(PlaceProvider):
         item = (response.json().get("result") or {}).get("items", [None])[0]
         if not isinstance(item, dict):
             raise PlaceNotFoundError(f"2ГИС ID не найден: {provider_id}")
+        if not self.is_active(item):
+            raise PlaceNotFoundError(
+                f"Карточка 2ГИС {provider_id} закрыта или временно не работает"
+            )
         profile = self._normalize(item, str(item.get("name") or provider_id), None)
         profile.branches = await self._fetch_org_branches(item)
         return profile
@@ -82,7 +87,11 @@ class TwoGisPlaceProvider(PlaceProvider):
                 response.raise_for_status()
                 raw_items = (response.json().get("result") or {}).get("items") or []
                 for raw in raw_items:
-                    if not isinstance(raw, dict) or not raw.get("id"):
+                    if (
+                        not isinstance(raw, dict)
+                        or not raw.get("id")
+                        or not self.is_active(raw)
+                    ):
                         continue
                     raw_point = raw.get("point") if isinstance(raw.get("point"), dict) else {}
                     branches.append(
@@ -139,6 +148,25 @@ class TwoGisPlaceProvider(PlaceProvider):
     def _normalized(value: str) -> str:
         value = value.split(",", 1)[0].casefold().replace("ё", "е")
         return re.sub(r"[^a-zа-я0-9]+", "", value)
+
+    @staticmethod
+    def is_active(item: dict) -> bool:
+        flags = item.get("flags") if isinstance(item.get("flags"), dict) else {}
+        for key, value in {**flags, **item}.items():
+            normalized_key = str(key).casefold().replace("-", "_")
+            if value is True and any(
+                marker in normalized_key
+                for marker in ("temporarily_closed", "permanently_closed", "is_closed")
+            ):
+                return False
+        status = str(item.get("status") or "").casefold().replace("-", "_")
+        return status not in {
+            "closed",
+            "inactive",
+            "removed",
+            "temporarily_closed",
+            "permanently_closed",
+        }
 
     @classmethod
     def _match_score(cls, query: str, item: dict) -> float:

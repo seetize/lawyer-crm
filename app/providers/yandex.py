@@ -78,6 +78,13 @@ class YandexMapsProvider(PlaceProvider):
         )
         organizations = self.parse_organizations(html)
         if not organizations:
+            organizations = await self._search_businesses(query, {}, city)
+        organizations = [
+            organization
+            for organization in organizations
+            if self.is_active(organization)
+        ]
+        if not organizations:
             raise PlaceNotFoundError(
                 f"Заведение не найдено в Яндекс Картах: {query}, {city or ''}"
             )
@@ -92,10 +99,11 @@ class YandexMapsProvider(PlaceProvider):
             follow_redirects=True,
             headers=headers,
         ) as client:
-            reviews, services, news, rankings, branches = await asyncio.gather(
+            reviews, services, news, stories, rankings, branches = await asyncio.gather(
                 self._fetch_all_reviews(client, item),
                 self._fetch_prices(client, item),
                 self._fetch_news(item),
+                self._fetch_stories(item),
                 self._fetch_search_rankings(item, city),
                 self._fetch_branches(item, city),
             )
@@ -104,7 +112,7 @@ class YandexMapsProvider(PlaceProvider):
             profile.services = services
             profile.news = news
             profile.stories = self._merge_stories(
-                profile.stories, self.parse_stories_html(html)
+                profile.stories, [*self.parse_stories_html(html), *stories]
             )
             profile.branches = branches or profile.branches
             profile.search_rankings = rankings
@@ -136,6 +144,10 @@ class YandexMapsProvider(PlaceProvider):
             raise PlaceNotFoundError(
                 f"Точная карточка Яндекс {provider_id} не найдена"
             )
+        if not self.is_active(item):
+            raise PlaceNotFoundError(
+                f"Карточка Яндекс {provider_id} закрыта или временно не работает"
+            )
         profile = self.normalize_organization(item)
         timeout = httpx.Timeout(30, connect=15)
         async with httpx.AsyncClient(
@@ -143,10 +155,11 @@ class YandexMapsProvider(PlaceProvider):
             follow_redirects=True,
             headers=headers,
         ) as client:
-            reviews, services, news, rankings, branches = await asyncio.gather(
+            reviews, services, news, stories, rankings, branches = await asyncio.gather(
                 self._fetch_all_reviews(client, item),
                 self._fetch_prices(client, item),
                 self._fetch_news(item),
+                self._fetch_stories(item),
                 self._fetch_search_rankings(item, profile.city),
                 self._fetch_branches(item, profile.city),
             )
@@ -155,11 +168,47 @@ class YandexMapsProvider(PlaceProvider):
             profile.services = services
             profile.news = news
             profile.stories = self._merge_stories(
-                profile.stories, self.parse_stories_html(html)
+                profile.stories, [*self.parse_stories_html(html), *stories]
             )
             profile.branches = branches or profile.branches
             profile.search_rankings = rankings
             return profile
+
+    async def search_candidates(
+        self, query: str, city: str | None = None
+    ) -> list[BranchRef]:
+        expected = self._normalized_name(query)
+        candidates: dict[str, dict[str, Any]] = {}
+        initial = await self._search_businesses(query, {}, city)
+        for candidate in initial:
+            identifier = str(candidate.get("id") or "")
+            if identifier:
+                candidates[identifier] = candidate
+        seed = initial[0] if initial else {}
+        for candidate in await self._search_businesses(
+            f"{query} салон красоты", seed, city
+        ):
+            identifier = str(candidate.get("id") or "")
+            if identifier:
+                candidates[identifier] = candidate
+        result: list[BranchRef] = []
+        for candidate in candidates.values():
+            name = str(candidate.get("title") or candidate.get("name") or "")
+            if expected not in self._normalized_name(name) or not self.is_active(candidate):
+                continue
+            coordinates = candidate.get("coordinates") or []
+            result.append(
+                BranchRef(
+                    provider_id=str(candidate["id"]),
+                    name=name,
+                    address=candidate.get("fullAddress") or candidate.get("address"),
+                    longitude=float(coordinates[0]) if len(coordinates) >= 2 else None,
+                    latitude=float(coordinates[1]) if len(coordinates) >= 2 else None,
+                    url=f"https://yandex.ru/maps/org/{candidate['id']}/",
+                    position=len(result),
+                )
+            )
+        return result
 
     async def _browser_html(
         self, url: str, params: dict[str, str] | None = None
@@ -391,6 +440,56 @@ class YandexMapsProvider(PlaceProvider):
     def _merge_stories(base: list[StoryItem], extra: list[StoryItem]) -> list[StoryItem]:
         return list({story.provider_story_id: story for story in [*base, *extra]}.values())
 
+    async def _fetch_stories(self, item: dict[str, Any]) -> list[StoryItem]:
+        """Load stories that the card UI requests lazily after page render."""
+        if not item.get("hasStories"):
+            return []
+        provider_id = str(item.get("id") or "")
+        if not provider_id:
+            return []
+        referer = f"https://yandex.ru/maps/org/{provider_id}/"
+        url = "https://yandex.ru/maps/api/stories/fetch-viewer-by-permalink"
+        offset = 0
+        page_size = 10
+        csrf_token: str | None = None
+        raw_stories: list[dict[str, Any]] = []
+        try:
+            async with AsyncSession(
+                impersonate="chrome",
+                headers={"Referer": referer, "X-Retpath-Y": referer},
+                timeout=30,
+                verify=curl_ca_bundle(),
+            ) as session:
+                while True:
+                    payload, csrf_token = await self._signed_api_get(
+                        session,
+                        url,
+                        {
+                            "ajax": "1",
+                            "permalink": provider_id,
+                            "offset": str(offset),
+                            "pageSize": str(page_size),
+                            "theme": "light",
+                        },
+                        csrf_token,
+                    )
+                    data = payload.get("data")
+                    if not isinstance(data, dict):
+                        break
+                    page = [
+                        story
+                        for story in data.get("stories") or []
+                        if isinstance(story, dict) and not story.get("deleted")
+                    ]
+                    raw_stories.extend(page)
+                    total = int(data.get("totalCount") or len(raw_stories))
+                    offset += len(page)
+                    if not page or offset >= total:
+                        break
+        except (RequestsError, ValueError, TypeError):
+            return []
+        return self._stories({"stories": raw_stories})
+
     @staticmethod
     def _branches(item: dict[str, Any]) -> list[BranchRef]:
         raw_items = item.get("branches") or item.get("relatedPlaces") or []
@@ -415,18 +514,17 @@ class YandexMapsProvider(PlaceProvider):
         name = str(item.get("title") or item.get("name") or "").strip()
         if not name:
             return []
-        try:
-            html = await self._browser_html(
-                self.search_url,
-                params={"text": " ".join(part for part in (name, city) if part)},
-            )
-        except (RequestsError, ValueError):
-            return []
-        expected = self._normalized_name(name)
+        search_name = re.split(r"\s+[&|]\s+", name, maxsplit=1)[0].strip()
+        expected = self._normalized_name(search_name)
         branches: list[BranchRef] = []
-        for candidate in self.parse_organizations(html):
+        candidates: dict[str, dict[str, Any]] = {str(item.get("id") or ""): item}
+        for query in (search_name, f"{search_name} салон красоты"):
+            for candidate in await self._search_businesses(query, item, city):
+                candidates[str(candidate.get("id") or "")] = candidate
+        for candidate in candidates.values():
             candidate_name = str(candidate.get("title") or candidate.get("name") or "")
-            if self._normalized_name(candidate_name) != expected:
+            actual = self._normalized_name(candidate_name)
+            if not expected or expected not in actual or not self.is_active(candidate):
                 continue
             branch_id = str(candidate.get("id") or "")
             coordinates = candidate.get("coordinates") or []
@@ -442,6 +540,95 @@ class YandexMapsProvider(PlaceProvider):
                 )
             )
         return list({branch.provider_id: branch for branch in branches}.values())
+
+    async def _search_businesses(
+        self,
+        query: str,
+        item: dict[str, Any],
+        city: str | None,
+    ) -> list[dict[str, Any]]:
+        has_location = bool(item.get("coordinates") or item.get("region"))
+        if has_location:
+            _scope, _scope_type, center, span = self._ranking_scope(item, city)
+        else:
+            center = span = []
+        region = item.get("region") if isinstance(item.get("region"), dict) else {}
+        params = {
+            "ajax": "1",
+            "text": query if has_location else " ".join(filter(None, (query, city))),
+            "lang": "ru_RU" if self.language.startswith("ru") else self.language,
+            "yandex_gid": str(region.get("id") or item.get("geoId") or "0"),
+            "origin": "maps-url",
+            "results": "25",
+            "snippets": "businessrating/1.x,businessimages/1.x,subtitle/1.x",
+        }
+        if isinstance(center, list) and len(center) >= 2:
+            params["ll"] = self._coordinate_text(center[:2])
+        if isinstance(span, list) and len(span) >= 2:
+            params["spn"] = self._coordinate_text(span[:2])
+            params["rspn"] = "1"
+        referer = "https://yandex.ru/maps/?" + urllib.parse.urlencode(
+            {
+                "text": params["text"],
+                **({"ll": params["ll"]} if "ll" in params else {}),
+                **({"spn": params["spn"], "rspn": "1"} if "spn" in params else {}),
+            },
+            quote_via=urllib.parse.quote,
+            safe=",",
+        )
+        try:
+            async with AsyncSession(
+                impersonate="chrome",
+                headers={"Referer": referer, "X-Retpath-Y": referer},
+                timeout=30,
+                verify=curl_ca_bundle(),
+            ) as session:
+                payload, _ = await self._signed_api_get(
+                    session,
+                    "https://yandex.ru/maps/api/search",
+                    params,
+                    None,
+                )
+        except (RequestsError, ValueError, TypeError):
+            return []
+        data = payload.get("data")
+        return [
+            candidate
+            for candidate in (data.get("items") if isinstance(data, dict) else []) or []
+            if isinstance(candidate, dict)
+            and candidate.get("type", "business") == "business"
+            and not candidate.get("isAdvert")
+        ]
+
+    @staticmethod
+    def is_active(item: dict[str, Any]) -> bool:
+        """Reject explicit provider closure markers; opening hours are not closure."""
+        if any(
+            item.get(key) is True
+            for key in (
+                "isClosed",
+                "temporaryClosed",
+                "permanentlyClosed",
+                "isTemporarilyClosed",
+                "isPermanentlyClosed",
+                "closedForVisitors",
+            )
+        ):
+            return False
+        closed_statuses = {
+            "closed",
+            "inactive",
+            "removed",
+            "not_working",
+            "temporarily_closed",
+            "permanently_closed",
+        }
+        for key in ("status", "businessStatus", "workingStatus"):
+            status = str(item.get(key) or "").strip().casefold().replace("-", "_")
+            if status in closed_statuses:
+                return False
+        name = str(item.get("title") or item.get("name") or "").casefold()
+        return not any(marker in name for marker in ("(закрыто)", "не работает"))
 
     @staticmethod
     def _normalized_name(value: str) -> str:

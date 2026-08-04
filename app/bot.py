@@ -69,6 +69,7 @@ STATUS_BUTTON = "📊 Статус сбора"
 class SearchFlow(StatesGroup):
     waiting_city = State()
     waiting_name = State()
+    waiting_choice = State()
 
 
 class CatalogFlow(StatesGroup):
@@ -154,8 +155,70 @@ async def search_by_name(message: Message, state: FSMContext) -> None:
         return
     data = await state.get_data()
     city = data.get("city", get_settings().default_city)
+    if service is not None:
+        try:
+            async with asyncio.timeout(45):
+                candidates = await service.search_candidates(raw, city)
+        except Exception:
+            candidates = []
+        if candidates:
+            token = secrets.token_hex(3)
+            await state.update_data(
+                search_token=token,
+                search_query=raw,
+                search_city=city,
+                search_candidates=[candidate.model_dump() for candidate in candidates],
+            )
+            await state.set_state(SearchFlow.waiting_choice)
+            keyboard = InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [
+                        InlineKeyboardButton(
+                            text=(
+                                f"{candidate.name} · {candidate.address or 'адрес не указан'}"
+                            )[:64],
+                            callback_data=f"fs:{token}:{index}",
+                        )
+                    ]
+                    for index, candidate in enumerate(candidates)
+                ]
+            )
+            await message.answer(
+                f"Найдено активных заведений: {len(candidates)}. Выберите нужное:",
+                reply_markup=keyboard,
+            )
+            return
     await state.set_state(None)
     await send_report(message, raw, city, [], reply_markup=main_keyboard())
+
+
+@router.callback_query(F.data.startswith("fs:"))
+async def select_search_candidate(
+    callback: CallbackQuery,
+    state: FSMContext,
+) -> None:
+    parts = (callback.data or "").split(":")
+    data = await state.get_data()
+    if len(parts) != 3 or parts[1] != data.get("search_token"):
+        await callback.answer("Список устарел. Повторите поиск.", show_alert=True)
+        return
+    try:
+        candidate = data["search_candidates"][int(parts[2])]
+    except (KeyError, IndexError, TypeError, ValueError):
+        await callback.answer("Заведение не найдено.", show_alert=True)
+        return
+    if callback.message is None:
+        return
+    await callback.answer()
+    await state.set_state(None)
+    await send_report(
+        callback.message,
+        candidate["name"],
+        data.get("search_city") or get_settings().default_city,
+        [],
+        reply_markup=main_keyboard(),
+        exact_provider_id=str(candidate["provider_id"]),
+    )
 
 
 @router.message(Command("report"))
@@ -1019,6 +1082,7 @@ async def send_report(
     city: str,
     criteria: list[str],
     reply_markup: ReplyKeyboardMarkup | None = None,
+    exact_provider_id: str | None = None,
 ) -> None:
     if service is None:
         await message.answer("Сервис ещё не готов.")
@@ -1049,11 +1113,18 @@ async def send_report(
 
     try:
         async with asyncio.timeout(90):
-            result = await service.create_report(
-                query,
-                criteria=criteria,
-                city=city,
-            )
+            if exact_provider_id:
+                result = await service.create_report_exact(
+                    "yandex_maps",
+                    exact_provider_id,
+                    criteria=criteria,
+                )
+            else:
+                result = await service.create_report(
+                    query,
+                    criteria=criteria,
+                    city=city,
+                )
         owner_id = (
             message.from_user.id
             if message.from_user is not None

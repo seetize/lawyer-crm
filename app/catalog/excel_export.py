@@ -49,8 +49,21 @@ def _sheets(profile: SalonProfile) -> dict[str, list[list[Any]]]:
         "Новости": [["ID", "Дата", "Текст", "Фото URL", "Локальные файлы", "URL"], *[[x.provider_news_id, x.published_at, x.text, "\n".join(map(str, x.photos)), "\n".join(x.local_photo_paths), str(x.url or "")] for x in profile.news]],
         "Истории": [["Порядок", "Категория", "ID", "Заголовок", "Текст", "Медиа URL", "Локальные файлы", "URL"], *[[x.position + 1, x.category, x.provider_story_id, x.title, x.text, "\n".join(x.media_urls), "\n".join(x.local_media_paths), x.url] for x in profile.stories]],
         "Медиа": [["Порядок", "Тип", "Категория", "ID", "Исходный URL", "Локальный файл", "Описание"], *[[x.position + 1, x.media_type, x.category, x.provider_media_id, x.url, x.local_path, x.alt] for x in profile.media]],
-        "Отзывы": [["Источник", "ID", "Автор", "Оценка", "Дата", "Текст", "URL"], *[[x.provider, x.provider_review_id, x.author, x.rating, x.published_at, x.text, str(x.url or "")] for x in profile.reviews]],
-        "Ответы": [["Источник", "ID отзыва", "Автор", "Дата", "Ответ"], *[[x.provider, x.provider_review_id, reply.author, reply.published_at, reply.text] for x in profile.reviews for reply in x.organization_replies]],
+        "Отзывы": [["Источник", "ID", "Автор", "Оценка", "Дата", "Отзыв", "Ответ организации", "Автор ответа", "Дата ответа", "URL"], *[
+            [
+                review.provider,
+                review.provider_review_id,
+                review.author,
+                review.rating,
+                review.published_at,
+                review.text,
+                "\n\n".join(reply.text for reply in review.organization_replies),
+                "\n".join(reply.author or "" for reply in review.organization_replies),
+                "\n".join(reply.published_at or "" for reply in review.organization_replies),
+                str(review.url or ""),
+            ]
+            for review in profile.reviews
+        ]],
         "Оценки": [["Источник", "Оценка", "Отзывы", "URL"], *[[x.provider, x.rating, x.reviews_count, str(x.url or "")] for x in profile.ratings]],
         "График": [["Порядок", "Значение"], *[[i, value] for i, value in enumerate(profile.opening_hours, 1)]],
         "Мастера": [["Порядок", "Мастер"], *[[i, value] for i, value in enumerate(profile.masters, 1)]],

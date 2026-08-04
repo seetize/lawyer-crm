@@ -2,6 +2,7 @@ import asyncio
 
 from app.models import SalonProfile
 from app.providers.base import PlaceNotFoundError, PlaceProvider, ProfileEnricher
+from app.providers.yandex import YandexMapsProvider
 
 
 class CompositePlaceProvider(PlaceProvider):
@@ -35,6 +36,49 @@ class CompositePlaceProvider(PlaceProvider):
             except Exception:
                 # Optional enrichment must not discard already collected map data.
                 continue
+        return profile
+
+    async def search_candidates(self, query: str, city: str | None = None):
+        for provider in self.providers:
+            search = getattr(provider, "search_candidates", None)
+            if search is None:
+                continue
+            candidates = await search(query, city)
+            if candidates:
+                return candidates
+        return []
+
+    async def collect_by_id(
+        self,
+        provider_name: str,
+        provider_id: str,
+    ) -> SalonProfile:
+        target = next(
+            (
+                provider
+                for provider in self.providers
+                if provider_name == "yandex_maps"
+                and isinstance(provider, YandexMapsProvider)
+            ),
+            None,
+        )
+        if target is None or not hasattr(target, "collect_by_id"):
+            raise PlaceNotFoundError(f"Источник {provider_name} недоступен")
+        profile = await target.collect_by_id(provider_id)
+        extra_results = await asyncio.gather(
+            *(
+                provider.collect(
+                    " ".join(filter(None, (profile.name, profile.address))),
+                    profile.city,
+                )
+                for provider in self.providers
+                if provider is not target
+            ),
+            return_exceptions=True,
+        )
+        for extra in extra_results:
+            if isinstance(extra, SalonProfile):
+                profile = self._merge(profile, extra)
         return profile
 
     @staticmethod
